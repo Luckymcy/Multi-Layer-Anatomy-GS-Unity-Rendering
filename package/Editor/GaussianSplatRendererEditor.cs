@@ -41,6 +41,7 @@ namespace GaussianSplatting.Editor
         SerializedProperty m_PropOptimizeForQuest;
 
         bool m_ResourcesExpanded = false;
+        bool m_LayerAppearanceExpanded = true;
         int m_CameraIndex = 0;
 
         bool m_ExportBakeTransform;
@@ -143,6 +144,39 @@ namespace GaussianSplatting.Editor
                         gs.m_LayerActivationState[i] = new int2(i, check ? 1 : 0);
                         gs.UpdateRessources();
                         EditorUtility.SetDirty(gs);
+                    }
+                }
+
+                int appearanceCount = gs.asset.LayerData.Count > 0
+                    ? gs.asset.LayerData.Max(l => (int)l.layer) + 1
+                    : 1;
+                gs.EnsureLayerAppearanceCount(appearanceCount);
+
+                m_LayerAppearanceExpanded = EditorGUILayout.Foldout(
+                    m_LayerAppearanceExpanded,
+                    "Layer Appearance",
+                    true,
+                    EditorStyles.foldoutHeader);
+                if (m_LayerAppearanceExpanded)
+                {
+                    foreach (int layerId in gs.asset.layerInfo.Keys.OrderBy(id => id))
+                    {
+                        var appearance = gs.m_LayerAppearances[layerId];
+                        EditorGUILayout.LabelField($"Layer {layerId}", EditorStyles.boldLabel);
+                        EditorGUI.indentLevel++;
+                        EditorGUI.BeginChangeCheck();
+                        appearance.color = EditorGUILayout.ColorField("Target Color", appearance.color);
+                        appearance.recolorStrength = EditorGUILayout.Slider("Recolor Strength", appearance.recolorStrength, 0.0f, 1.0f);
+                        appearance.brightness = EditorGUILayout.Slider("Brightness", appearance.brightness, 0.0f, 3.0f);
+                        appearance.opacity = EditorGUILayout.Slider("Layer Opacity", appearance.opacity, 0.0f, 2.0f);
+                        if (EditorGUI.EndChangeCheck())
+                        {
+                            Undo.RecordObject(gs, $"Change Layer {layerId} Appearance");
+                            gs.m_LayerAppearances[layerId] = appearance;
+                            gs.UploadLayerAppearanceData();
+                            EditorUtility.SetDirty(gs);
+                        }
+                        EditorGUI.indentLevel--;
                     }
                 }
             }

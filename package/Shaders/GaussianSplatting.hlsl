@@ -314,8 +314,40 @@ uint EncodeQuatToNorm10(float4 v) // 32 bits: 10.10.10.2
 SplatBufferDataType _SplatPos;
 SplatBufferDataType _SplatOther;
 SplatBufferDataType _SplatSH;
+StructuredBuffer<uint> _SplatLayer;
+
+struct LayerAppearanceData
+{
+    float4 color;
+    // x: recolor strength, y: brightness, z: opacity multiplier
+    float4 parameters;
+};
+StructuredBuffer<LayerAppearanceData> _LayerAppearance;
+uint _LayerAppearanceCount;
+
 Texture2D _SplatColor;
 uint _SplatFormat;
+
+float4 ApplyLayerAppearance(float3 learnedColor, int layer)
+{
+    if (_LayerAppearanceCount == 0)
+        return float4(learnedColor, 1.0);
+
+    uint layerIndex = min((uint)max(layer, 0), _LayerAppearanceCount - 1);
+    LayerAppearanceData appearance = _LayerAppearance[layerIndex];
+
+    float strength = saturate(appearance.parameters.x);
+    float brightness = max(appearance.parameters.y, 0.0);
+    float opacity = max(appearance.parameters.z, 0.0);
+
+    // Replace hue/chroma while retaining the luminance learned by the SH model.
+    const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+    float learnedLuminance = max(dot(learnedColor, kLuma), 0.0);
+    float targetLuminance = max(dot(appearance.color.rgb, kLuma), 1e-4);
+    float3 recolored = appearance.color.rgb * (learnedLuminance / targetLuminance) * brightness;
+
+    return float4(lerp(learnedColor, recolored, strength), opacity);
+}
 
 // Match GaussianSplatAsset.VectorFormat
 #define VECTOR_FMT_32F 0
@@ -461,6 +493,7 @@ SplatData LoadSplatData(uint idx)
 
 
     // load raw splat data, which might be chunk-relative
+    s.layer     = (int)_SplatLayer[idx];
     s.pos       = LoadSplatPosValue(idx);
     s.rot       = DecodeRotation(DecodePacked_10_10_10_2(LoadUInt(_SplatOther, otherAddr)));
     s.scale     = LoadAndDecodeVector(_SplatOther, otherAddr + 4, scaleFmt);
