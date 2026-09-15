@@ -287,6 +287,7 @@ namespace GaussianSplatting.Runtime
         GraphicsBuffer m_GpuOtherData;
         GraphicsBuffer m_GpuSHData;
         private GraphicsBuffer m_GpuLayerData;
+        private GraphicsBuffer m_GpuHUData;
         private GraphicsBuffer m_GpuLayerAppearance;
         Texture m_GpuColorData;
         internal GraphicsBuffer m_GpuChunks;
@@ -296,6 +297,7 @@ namespace GaussianSplatting.Runtime
         internal Camera m_centerEyeCamera;
         internal Matrix4x4 m_centerCamMatrix;
         public bool m_OptimizeForQuest;
+        bool m_HasHU;
 
 
         // these buffers are only for splat editing, and are lazily created
@@ -325,6 +327,8 @@ namespace GaussianSplatting.Runtime
         {
             public static readonly int SplatPos = Shader.PropertyToID("_SplatPos");
             public static readonly int SplatLayer = Shader.PropertyToID("_SplatLayer");
+            public static readonly int SplatHU = Shader.PropertyToID("_SplatHU");
+            public static readonly int SplatHasHU = Shader.PropertyToID("_SplatHasHU");
             public static readonly int LayerAppearance = Shader.PropertyToID("_LayerAppearance");
             public static readonly int LayerAppearanceCount = Shader.PropertyToID("_LayerAppearanceCount");
             public static readonly int SplatOther = Shader.PropertyToID("_SplatOther");
@@ -406,7 +410,12 @@ namespace GaussianSplatting.Runtime
             m_Asset.otherDataSize > 0 &&
             m_Asset.shDataSize > 0 &&
             m_Asset.colorDataSize > 0;
-        public bool HasValidRenderSetup => m_GpuPosData != null && m_GpuOtherData != null && m_GpuChunks != null;
+        public bool HasValidRenderSetup =>
+            m_GpuPosData != null &&
+            m_GpuOtherData != null &&
+            m_GpuChunks != null &&
+            m_GpuLayerData != null &&
+            m_GpuHUData != null;
 
         const int kGpuViewDataSize = 40;
 
@@ -475,7 +484,10 @@ namespace GaussianSplatting.Runtime
             var colorDataArr = new NativeArray<byte>(colorSize, Allocator.TempJob);
             var chunkDataArr = new NativeArray<byte>(chunkSize, Allocator.Temp);
             var layerDataArr = new NativeArray<uint>(m_SplatCount, Allocator.Temp);
+            var huDataArr = new NativeArray<float>(m_SplatCount, Allocator.Temp, NativeArrayOptions.ClearMemory);
+            m_HasHU = activeLayerAssets.Count > 0 && activeLayerAssets.All(l => l.m_HUData != null);
             int layerMarker = 0;
+            int huMarker = 0;
             
             foreach (var layerAssets in activeLayerAssets)
             {
@@ -484,6 +496,24 @@ namespace GaussianSplatting.Runtime
                 for (int i = 0; i < layerSplatCount; ++i)
                     layerDataArr[layerMarker + i] = layerAssets.layer;
                 layerMarker += layerSplatCount;
+
+                if (m_HasHU)
+                {
+                    var huAssetData = layerAssets.m_HUData.GetData<float>();
+                    if (huAssetData.Length != layerSplatCount)
+                    {
+                        Debug.LogError(
+                            $"HU data count mismatch in layer {layerAssets.layer}: " +
+                            $"expected {layerSplatCount}, got {huAssetData.Length}", this);
+                        m_HasHU = false;
+                    }
+                    else
+                    {
+                        var huSub = huDataArr.GetSubArray(huMarker, layerSplatCount);
+                        huSub.CopyFrom(huAssetData);
+                    }
+                }
+                huMarker += layerSplatCount;
 
                 var posSub = posDataArr.GetSubArray(posMarker, posAssetData.Length);
                 posMarker += posAssetData.Length;
@@ -521,6 +551,9 @@ namespace GaussianSplatting.Runtime
 
             m_GpuLayerData = new GraphicsBuffer(GraphicsBuffer.Target.Structured, layerDataArr.Length, sizeof(uint)) { name = "GaussianLayerData" };
             m_GpuLayerData.SetData(layerDataArr);
+
+            m_GpuHUData = new GraphicsBuffer(GraphicsBuffer.Target.Structured, huDataArr.Length, sizeof(float)) { name = "GaussianHUData" };
+            m_GpuHUData.SetData(huDataArr);
 
             UploadLayerAppearanceData();
             
@@ -573,6 +606,7 @@ namespace GaussianSplatting.Runtime
             otherDataArr.Dispose();
             shDataArr.Dispose();
             colorDataArr.Dispose();
+            huDataArr.Dispose();
             chunkDataArr.Dispose();
             layerDataArr.Dispose();
 
@@ -705,6 +739,7 @@ namespace GaussianSplatting.Runtime
             int kernelIndex = (int) kernel;
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatPos, m_GpuPosData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatLayer, m_GpuLayerData);
+            cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHU, m_GpuHUData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.LayerAppearance, m_GpuLayerAppearance);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatChunks, m_GpuChunks);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatOther, m_GpuOtherData);
@@ -720,6 +755,7 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeIntParam(cs, Props.SplatFormat, (int)format);
             cmb.SetComputeIntParam(cs, Props.SplatCount, m_SplatCount);
             cmb.SetComputeIntParam(cs, Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
+            cmb.SetComputeIntParam(cs, Props.SplatHasHU, m_HasHU ? 1 : 0);
             cmb.SetComputeIntParam(cs, Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
 
             UpdateCutoutsBuffer();
@@ -731,6 +767,7 @@ namespace GaussianSplatting.Runtime
         {
             mat.SetBuffer(Props.SplatPos, m_GpuPosData);
             mat.SetBuffer(Props.SplatLayer, m_GpuLayerData);
+            mat.SetBuffer(Props.SplatHU, m_GpuHUData);
             mat.SetBuffer(Props.LayerAppearance, m_GpuLayerAppearance);
             mat.SetBuffer(Props.SplatOther, m_GpuOtherData);
             mat.SetBuffer(Props.SplatSH, m_GpuSHData);
@@ -742,6 +779,7 @@ namespace GaussianSplatting.Runtime
             mat.SetInteger(Props.SplatFormat, (int)format);
             mat.SetInteger(Props.SplatCount, m_SplatCount);
             mat.SetInteger(Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
+            mat.SetInteger(Props.SplatHasHU, m_HasHU ? 1 : 0);
             mat.SetInteger(Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
             mat.SetInteger(Props.OptimizeForQuest, m_OptimizeForQuest ? 1 : 0);
         }
@@ -758,6 +796,7 @@ namespace GaussianSplatting.Runtime
 
             DisposeBuffer(ref m_GpuPosData);
             DisposeBuffer(ref m_GpuLayerData);
+            DisposeBuffer(ref m_GpuHUData);
             DisposeBuffer(ref m_GpuLayerAppearance);
             DisposeBuffer(ref m_GpuOtherData);
             DisposeBuffer(ref m_GpuSHData);
@@ -780,6 +819,7 @@ namespace GaussianSplatting.Runtime
 
             m_SplatCount = 0;
             m_GpuChunksValid = false;
+            m_HasHU = false;
 
             editSelectedSplats = 0;
             editDeletedSplats = 0;

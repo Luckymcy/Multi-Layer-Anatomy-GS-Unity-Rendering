@@ -210,6 +210,7 @@ struct SplatData
 {
     float3 pos;
     int layer;
+    float hu;
     float4 rot;
     float3 scale;
     half opacity;
@@ -315,6 +316,8 @@ SplatBufferDataType _SplatPos;
 SplatBufferDataType _SplatOther;
 SplatBufferDataType _SplatSH;
 StructuredBuffer<uint> _SplatLayer;
+StructuredBuffer<float> _SplatHU;
+uint _SplatHasHU;
 
 struct LayerAppearanceData
 {
@@ -494,6 +497,7 @@ SplatData LoadSplatData(uint idx)
 
     // load raw splat data, which might be chunk-relative
     s.layer     = (int)_SplatLayer[idx];
+    s.hu        = _SplatHasHU != 0 ? _SplatHU[idx] : 0.0;
     s.pos       = LoadSplatPosValue(idx);
     s.rot       = DecodeRotation(DecodePacked_10_10_10_2(LoadUInt(_SplatOther, otherAddr)));
     s.scale     = LoadAndDecodeVector(_SplatOther, otherAddr + 4, scaleFmt);

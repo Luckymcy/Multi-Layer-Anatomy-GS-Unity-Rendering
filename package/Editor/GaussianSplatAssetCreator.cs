@@ -239,6 +239,7 @@ namespace GaussianSplatting.Editor
             public Vector3 scale;
             public Quaternion rot;
             public int layer;
+            public float hu;
         }
 
         static T CreateOrReplaceAsset<T>(T asset, string path) where T : UnityEngine.Object
@@ -281,7 +282,7 @@ namespace GaussianSplatting.Editor
 
             EditorUtility.DisplayProgressBar(kProgressTitle, "Reading data files", 0.0f);
             GaussianSplatAsset.CameraInfo[] cameras = LoadJsonCamerasFile(m_InputFile, m_ImportCameras);
-            using NativeArray<InputSplatData> inputSplats = LoadPLYSplatFile(m_InputFile);
+            using NativeArray<InputSplatData> inputSplats = LoadPLYSplatFile(m_InputFile, out bool hasHU);
             if (inputSplats.Length == 0)
             {
                 EditorUtility.ClearProgressBar();
@@ -358,6 +359,7 @@ namespace GaussianSplatting.Editor
                 string pathOther = $"{m_OutputFolder}/{baseName}_L{activeLayer}_oth.bytes";
                 string pathCol = $"{m_OutputFolder}/{baseName}_L{activeLayer}_col.bytes";
                 string pathSh = $"{m_OutputFolder}/{baseName}_L{activeLayer}_shs.bytes";
+                string pathHU = $"{m_OutputFolder}/{baseName}_L{activeLayer}_hu.bytes";
                 LinearizeData(splats);
 
 
@@ -385,6 +387,7 @@ namespace GaussianSplatting.Editor
                 CreateOtherData(splats, pathOther, ref dataHash, shIndices);
                 CreateSimpleColorData(splats, pathCol, ref dataHash);
                 if (!usingClusteredSH) CreateSHData(splats, pathSh, ref dataHash, clusteredSHs);
+                if (hasHU) CreateHUData(splats, pathHU, ref dataHash);
 
                 asset.SetDataHash(dataHash);
 
@@ -400,7 +403,8 @@ namespace GaussianSplatting.Editor
                     AssetDatabase.LoadAssetAtPath<TextAsset>(pathPos),
                     AssetDatabase.LoadAssetAtPath<TextAsset>(pathOther),
                     AssetDatabase.LoadAssetAtPath<TextAsset>(pathCol),
-                    usingClusteredSH ? null : AssetDatabase.LoadAssetAtPath<TextAsset>(pathSh));
+                    usingClusteredSH ? null : AssetDatabase.LoadAssetAtPath<TextAsset>(pathSh),
+                    hasHU ? AssetDatabase.LoadAssetAtPath<TextAsset>(pathHU) : null);
             }
 
             var assetPath = $"{m_OutputFolder}/{baseName}.asset";
@@ -413,8 +417,9 @@ namespace GaussianSplatting.Editor
             Selection.activeObject = savedAsset;
         }
 
-        unsafe NativeArray<InputSplatData> LoadPLYSplatFile(string plyPath)
+        unsafe NativeArray<InputSplatData> LoadPLYSplatFile(string plyPath, out bool hasHU)
         {
+            hasHU = false;
             NativeArray<InputSplatData> data = default;
             if (!File.Exists(plyPath))
             {
@@ -424,10 +429,11 @@ namespace GaussianSplatting.Editor
 
             int splatCount;
             int vertexStride;
+            List<string> attributeNames;
             NativeArray<byte> verticesRawData;
             try
             {
-                PLYFileReader.ReadFile(plyPath, out splatCount, out vertexStride, out _, out verticesRawData);
+                PLYFileReader.ReadFile(plyPath, out splatCount, out vertexStride, out attributeNames, out verticesRawData);
             }
             catch (Exception ex)
             {
@@ -435,18 +441,45 @@ namespace GaussianSplatting.Editor
                 return data;
             }
 
-            if (UnsafeUtility.SizeOf<InputSplatData>() != vertexStride)
+            hasHU = attributeNames.Contains("hu");
+            int expectedStride = UnsafeUtility.SizeOf<InputSplatData>();
+            int legacyStride = expectedStride - sizeof(float);
+
+            if (hasHU && attributeNames[attributeNames.Count - 1] != "hu")
             {
-                m_ErrorMessage =
-                    $"PLY vertex size mismatch, expected {UnsafeUtility.SizeOf<InputSplatData>()} but file has {vertexStride}";
+                m_ErrorMessage = "PLY property 'hu' must be the final vertex property";
+                verticesRawData.Dispose();
+                return data;
+            }
+
+            bool isCurrentLayout = hasHU && vertexStride == expectedStride;
+            bool isLegacyLayout = !hasHU && vertexStride == legacyStride;
+            if (!isCurrentLayout && !isLegacyLayout)
+            {
+                m_ErrorMessage = hasHU
+                    ? $"PLY vertex size mismatch, expected {expectedStride} bytes with HU but file has {vertexStride}"
+                    : $"PLY vertex size mismatch, expected legacy {legacyStride} bytes or {expectedStride} bytes with HU but file has {vertexStride}";
+                verticesRawData.Dispose();
                 return data;
             }
 
             // reorder SHs
             NativeArray<float> floatData = verticesRawData.Reinterpret<float>(1);
-            ReorderSHs(splatCount, (float*)floatData.GetUnsafePtr());
+            ReorderSHs(splatCount, (float*)floatData.GetUnsafePtr(), vertexStride);
 
-            return verticesRawData.Reinterpret<InputSplatData>(1);
+            if (isCurrentLayout)
+                return verticesRawData.Reinterpret<InputSplatData>(1);
+
+            // Legacy PLY data is an exact prefix of the new layout. Expand each
+            // vertex and leave the appended HU field initialized to zero.
+            data = new NativeArray<InputSplatData>(
+                splatCount, Allocator.Persistent, NativeArrayOptions.ClearMemory);
+            UnsafeUtility.MemCpyStride(
+                data.GetUnsafePtr(), expectedStride,
+                verticesRawData.GetUnsafeReadOnlyPtr(), legacyStride,
+                legacyStride, splatCount);
+            verticesRawData.Dispose();
+            return data;
         }
         
         [BurstCompile]
@@ -461,9 +494,9 @@ namespace GaussianSplatting.Editor
         }
 
         [BurstCompile]
-        static unsafe void ReorderSHs(int splatCount, float* data)
+        static unsafe void ReorderSHs(int splatCount, float* data, int vertexStride)
         {
-            int splatStride = UnsafeUtility.SizeOf<InputSplatData>() / 4;
+            int splatStride = vertexStride / sizeof(float);
             int shStartOffset = 9, shCount = 15;
             float* tmp = stackalloc float[shCount * 3];
             int idx = shStartOffset;
@@ -1296,6 +1329,36 @@ namespace GaussianSplatting.Editor
 
             using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
             fs.Write(data);
+
+            data.Dispose();
+        }
+
+        [BurstCompile]
+        struct CreateHUDataJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<InputSplatData> m_Input;
+            [WriteOnly] public NativeArray<float> m_Output;
+
+            public void Execute(int index)
+            {
+                m_Output[index] = m_Input[index].hu;
+            }
+        }
+
+        void CreateHUData(NativeArray<InputSplatData> inputSplats, string filePath, ref Hash128 dataHash)
+        {
+            NativeArray<float> data = new(inputSplats.Length, Allocator.TempJob);
+            CreateHUDataJob job = new CreateHUDataJob
+            {
+                m_Input = inputSplats,
+                m_Output = data
+            };
+            job.Schedule(inputSplats.Length, 8192).Complete();
+
+            dataHash.Append(data);
+
+            using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
+            fs.Write(data.Reinterpret<byte>(sizeof(float)));
 
             data.Dispose();
         }

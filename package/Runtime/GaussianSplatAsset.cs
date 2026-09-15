@@ -136,7 +136,7 @@ namespace GaussianSplatting.Runtime
             m_clusteredSHData = clusteredSH;
         }
 
-        public void SetAssetFiles(byte layer, TextAsset dataChunk, TextAsset dataPos, TextAsset dataOther, TextAsset dataColor, TextAsset dataSh)
+        public void SetAssetFiles(byte layer, TextAsset dataChunk, TextAsset dataPos, TextAsset dataOther, TextAsset dataColor, TextAsset dataSh, TextAsset dataHU)
         {
             var data = new LayerAssets()
             {
@@ -146,6 +146,7 @@ namespace GaussianSplatting.Runtime
                 m_OtherData = dataOther,
                 m_ColorData = dataColor,
                 m_SHData = dataSh,
+                m_HUData = dataHU,
             };
             m_layerData.Add(data);
         }
@@ -242,6 +243,8 @@ namespace GaussianSplatting.Runtime
             [SerializeField] public TextAsset m_SHData;
             // Chunk data is optional (if data formats are fully lossless then there's no chunking)
             [SerializeField] public TextAsset m_ChunkData;
+            // HU data is optional for backwards compatibility with older PLY files and assets.
+            [SerializeField] public TextAsset m_HUData;
         }
 
         [SerializeField] private TextAsset m_clusteredSHData;
@@ -256,11 +259,13 @@ namespace GaussianSplatting.Runtime
 
         public List<LayerAssets> LayerData => m_layerData;
         public TextAsset ClusteredSHData => m_clusteredSHData;
+        public bool hasHU => m_layerData.Count > 0 && m_layerData.All(layer => layer.m_HUData != null);
         public long posDataSize => m_layerData.Sum(layer => layer.m_PosData.dataSize);
         public long colorDataSize => m_layerData.Sum(layer => layer.m_ColorData.dataSize);
         public long otherDataSize => m_layerData.Sum(layer => layer.m_OtherData.dataSize);
         public long shDataSize => m_clusteredSHData != null ? m_clusteredSHData.dataSize : m_layerData.Sum(layer => layer.m_SHData.dataSize);
         public long chunkDataSize => m_layerData.Sum(layer => layer.m_ChunkData != null ? layer.m_ChunkData.dataSize : 0);
+        public long huDataSize => m_layerData.Sum(layer => layer.m_HUData != null ? layer.m_HUData.dataSize : 0);
         public CameraInfo[] cameras => m_Cameras;
 
         public struct ChunkInfo
