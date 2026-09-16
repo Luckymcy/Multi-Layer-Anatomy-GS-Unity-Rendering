@@ -295,7 +295,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
 
         half4 col;
         float3 learnedColor = ShadeSH(splat.sh, objViewDir, _SHOrder, _SHOnly != 0);
-        float4 layerAppearance = ApplyLayerAppearance(learnedColor, splat.layer);
+        float4 layerAppearance = ApplyLayerAppearance(learnedColor, splat.layer, splat.hu);
         col.rgb = layerAppearance.rgb;
         col.a = min(splat.opacity * opacityScale * layerAppearance.a, 65000);
         view.color.x = (f32tof16(col.r) << 16) | f32tof16(col.g);

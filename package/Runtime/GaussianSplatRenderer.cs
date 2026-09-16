@@ -224,6 +224,9 @@ namespace GaussianSplatting.Runtime
         public struct LayerAppearance
         {
             [ColorUsage(false, false)] public Color color;
+            // Kept only so existing serialized scenes remain compatible. Teacher
+            // image chroma is no longer blended into the rendered color.
+            [HideInInspector]
             [Range(0.0f, 1.0f)] public float recolorStrength;
             [Range(0.0f, 3.0f)] public float brightness;
             [Range(0.0f, 2.0f)] public float opacity;
@@ -237,10 +240,90 @@ namespace GaussianSplatting.Runtime
             };
         }
 
+        [Serializable]
+        public struct HUTransferSettings
+        {
+            public float lowHU;
+            public float centerHU;
+            public float highHU;
+            [ColorUsage(false, false)] public Color lowColor;
+            [ColorUsage(false, false)] public Color centerColor;
+            [ColorUsage(false, false)] public Color highColor;
+
+            public Color Evaluate(float hu)
+            {
+                float center = math.max(centerHU, lowHU + 0.001f);
+                float high = math.max(highHU, center + 0.001f);
+                if (hu <= center)
+                    return Color.Lerp(lowColor, centerColor, math.saturate((hu - lowHU) / (center - lowHU)));
+                return Color.Lerp(centerColor, highColor, math.saturate((hu - center) / (high - center)));
+            }
+
+            public static HUTransferSettings DefaultForLayer(int layer)
+            {
+                float lowHU;
+                float centerHU;
+                float highHU;
+                Color centerColor;
+                switch (layer)
+                {
+                    case 0: // left ventricle
+                        lowHU = 170; centerHU = 356; highHU = 425;
+                        centerColor = new Color(0.58f, 0.10f, 0.065f, 1.0f);
+                        break;
+                    case 1: // right ventricle
+                        lowHU = 60; centerHU = 138; highHU = 280;
+                        centerColor = new Color(0.42f, 0.07f, 0.055f, 1.0f);
+                        break;
+                    case 2: // left atrium
+                        lowHU = 270; centerHU = 391; highHU = 445;
+                        centerColor = new Color(0.60f, 0.11f, 0.075f, 1.0f);
+                        break;
+                    case 3: // right atrium
+                        lowHU = 70; centerHU = 128; highHU = 205;
+                        centerColor = new Color(0.44f, 0.075f, 0.06f, 1.0f);
+                        break;
+                    case 4: // myocardium
+                        lowHU = 15; centerHU = 89; highHU = 370;
+                        centerColor = new Color(0.50f, 0.085f, 0.065f, 1.0f);
+                        break;
+                    case 5: // great vessels
+                        lowHU = 0; centerHU = 290; highHU = 435;
+                        centerColor = new Color(0.54f, 0.095f, 0.065f, 1.0f);
+                        break;
+                    case 6: // coronary arteries
+                        lowHU = 180; centerHU = 309; highHU = 465;
+                        centerColor = new Color(0.64f, 0.12f, 0.075f, 1.0f);
+                        break;
+                    default:
+                        lowHU = 0; centerHU = 100; highHU = 400;
+                        centerColor = new Color(0.50f, 0.09f, 0.065f, 1.0f);
+                        break;
+                }
+
+                Color lowColor = new Color(
+                    centerColor.r * 0.55f,
+                    centerColor.g * 0.55f,
+                    centerColor.b * 0.55f,
+                    1.0f);
+                Color warmHighlight = new Color(1.0f, 0.48f, 0.36f, 1.0f);
+                Color highColor = Color.Lerp(centerColor, warmHighlight, 0.35f);
+                return new HUTransferSettings
+                {
+                    lowHU = lowHU,
+                    centerHU = centerHU,
+                    highHU = highHU,
+                    lowColor = lowColor,
+                    centerColor = centerColor,
+                    highColor = highColor,
+                };
+            }
+        }
+
         struct LayerAppearanceGpu
         {
             public float4 color;
-            // x: recolor strength, y: brightness, z: opacity multiplier
+            // x: unused legacy value, y: brightness, z: opacity multiplier
             public float4 parameters;
         }
 
@@ -279,6 +362,14 @@ namespace GaussianSplatting.Runtime
         // layer stuff
         [SerializeField] public List<int2> m_LayerActivationState;
         [SerializeField] public List<LayerAppearance> m_LayerAppearances = new();
+        [SerializeField] public bool m_EnableHUMapping = true;
+        [Tooltip("Color mix: 0 uses the layer base color, 1 uses the per-layer HU lookup color.")]
+        [SerializeField, Range(0.0f, 1.0f)] public float m_HUColorStrength = 0.5f;
+        [Tooltip("Use only the grayscale luminance learned by SH; teacher-image hue is always discarded.")]
+        [SerializeField] public bool m_HUPreserveLighting = true;
+        [SerializeField] public float m_HULUTMin = -100.0f;
+        [SerializeField] public float m_HULUTMax = 600.0f;
+        [SerializeField] public List<HUTransferSettings> m_HUTransferSettings = new();
 
         int m_SplatCount; // initially same as asset splat count, but editing can change this
         GraphicsBuffer m_GpuSortDistances;
@@ -289,6 +380,7 @@ namespace GaussianSplatting.Runtime
         private GraphicsBuffer m_GpuLayerData;
         private GraphicsBuffer m_GpuHUData;
         private GraphicsBuffer m_GpuLayerAppearance;
+        Texture2D m_GpuHULUT;
         Texture m_GpuColorData;
         internal GraphicsBuffer m_GpuChunks;
         internal bool m_GpuChunksValid;
@@ -329,6 +421,9 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatLayer = Shader.PropertyToID("_SplatLayer");
             public static readonly int SplatHU = Shader.PropertyToID("_SplatHU");
             public static readonly int SplatHasHU = Shader.PropertyToID("_SplatHasHU");
+            public static readonly int HULayerLUT = Shader.PropertyToID("_HULayerLUT");
+            public static readonly int HULayerLUTHeight = Shader.PropertyToID("_HULayerLUTHeight");
+            public static readonly int HUParams = Shader.PropertyToID("_HUParams");
             public static readonly int LayerAppearance = Shader.PropertyToID("_LayerAppearance");
             public static readonly int LayerAppearanceCount = Shader.PropertyToID("_LayerAppearanceCount");
             public static readonly int SplatOther = Shader.PropertyToID("_SplatOther");
@@ -415,9 +510,11 @@ namespace GaussianSplatting.Runtime
             m_GpuOtherData != null &&
             m_GpuChunks != null &&
             m_GpuLayerData != null &&
-            m_GpuHUData != null;
+            m_GpuHUData != null &&
+            m_GpuHULUT != null;
 
         const int kGpuViewDataSize = 40;
+        const int kHULUTWidth = 256;
 
 
         void CreateResourcesForAsset()
@@ -556,6 +653,7 @@ namespace GaussianSplatting.Runtime
             m_GpuHUData.SetData(huDataArr);
 
             UploadLayerAppearanceData();
+            UploadHULUT();
             
             m_GpuOtherData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, otherDataArr.Length / 4, 4) { name = "GaussianOtherData" };
             m_GpuOtherData.SetData(otherDataArr);
@@ -640,7 +738,12 @@ namespace GaussianSplatting.Runtime
         {
             m_LayerAppearances ??= new List<LayerAppearance>();
             while (m_LayerAppearances.Count < count)
-                m_LayerAppearances.Add(LayerAppearance.Default);
+            {
+                int layer = m_LayerAppearances.Count;
+                LayerAppearance appearance = LayerAppearance.Default;
+                appearance.color = HUTransferSettings.DefaultForLayer(layer).centerColor;
+                m_LayerAppearances.Add(appearance);
+            }
         }
 
         public void UploadLayerAppearanceData()
@@ -671,7 +774,7 @@ namespace GaussianSplatting.Runtime
                 {
                     color = new float4(appearance.color.r, appearance.color.g, appearance.color.b, appearance.color.a),
                     parameters = new float4(
-                        math.saturate(appearance.recolorStrength),
+                        0.0f,
                         math.max(0.0f, appearance.brightness),
                         math.max(0.0f, appearance.opacity),
                         0.0f)
@@ -682,7 +785,7 @@ namespace GaussianSplatting.Runtime
             gpuData.Dispose();
         }
 
-        public void SetLayerAppearance(int layer, Color color, float recolorStrength, float brightness = 1.0f, float opacity = 1.0f)
+        public void SetLayerBaseAppearance(int layer, Color color, float brightness = 1.0f, float opacity = 1.0f)
         {
             if (layer < 0)
                 throw new ArgumentOutOfRangeException(nameof(layer));
@@ -691,11 +794,85 @@ namespace GaussianSplatting.Runtime
             m_LayerAppearances[layer] = new LayerAppearance
             {
                 color = color,
-                recolorStrength = math.saturate(recolorStrength),
+                recolorStrength = 0.0f,
                 brightness = math.max(0.0f, brightness),
                 opacity = math.max(0.0f, opacity),
             };
             UploadLayerAppearanceData();
+        }
+
+        [Obsolete("Teacher-image recolor strength is no longer used. Call SetLayerBaseAppearance instead.")]
+        public void SetLayerAppearance(int layer, Color color, float recolorStrength, float brightness = 1.0f, float opacity = 1.0f)
+        {
+            SetLayerBaseAppearance(layer, color, brightness, opacity);
+        }
+
+        public void EnsureHUTransferSettingsCount(int count)
+        {
+            m_HUTransferSettings ??= new List<HUTransferSettings>();
+            while (m_HUTransferSettings.Count < count)
+                m_HUTransferSettings.Add(HUTransferSettings.DefaultForLayer(m_HUTransferSettings.Count));
+        }
+
+        public void ResetHUTransferSettings(int count)
+        {
+            m_HUTransferSettings ??= new List<HUTransferSettings>();
+            m_HUTransferSettings.Clear();
+            for (int layer = 0; layer < count; ++layer)
+                m_HUTransferSettings.Add(HUTransferSettings.DefaultForLayer(layer));
+            UploadHULUT();
+        }
+
+        public void UploadHULUT()
+        {
+            int layerCount = 1;
+            if (asset != null && asset.LayerData.Count > 0)
+                layerCount = asset.LayerData.Max(l => (int)l.layer) + 1;
+            EnsureHUTransferSettingsCount(layerCount);
+
+            if (m_GpuHULUT == null || m_GpuHULUT.height != layerCount)
+            {
+                DestroyImmediate(m_GpuHULUT);
+                m_GpuHULUT = new Texture2D(
+                    kHULUTWidth,
+                    layerCount,
+                    TextureFormat.RGBA32,
+                    false,
+                    true)
+                {
+                    name = "GaussianHULayerLUT",
+                    filterMode = FilterMode.Bilinear,
+                    wrapMode = TextureWrapMode.Clamp,
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
+            }
+
+            float huMin = m_HULUTMin;
+            float huMax = math.max(m_HULUTMax, huMin + 1.0f);
+            var pixels = new Color[kHULUTWidth * layerCount];
+            const float lumaR = 0.2126f;
+            const float lumaG = 0.7152f;
+            const float lumaB = 0.0722f;
+            for (int layer = 0; layer < layerCount; ++layer)
+            {
+                HUTransferSettings settings = m_HUTransferSettings[layer];
+                float centerLuminance = math.max(
+                    settings.centerColor.r * lumaR +
+                    settings.centerColor.g * lumaG +
+                    settings.centerColor.b * lumaB,
+                    1.0f / 255.0f);
+                for (int x = 0; x < kHULUTWidth; ++x)
+                {
+                    float hu = math.lerp(huMin, huMax, x / (float)(kHULUTWidth - 1));
+                    Color color = settings.Evaluate(hu);
+                    // Alpha stores the neutral (center-HU) luminance. It is not opacity.
+                    color.a = centerLuminance;
+                    pixels[layer * kHULUTWidth + x] = color;
+                }
+            }
+
+            m_GpuHULUT.SetPixels(pixels);
+            m_GpuHULUT.Apply(false, false);
         }
 
         public void OnEnable()
@@ -740,6 +917,7 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatPos, m_GpuPosData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatLayer, m_GpuLayerData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHU, m_GpuHUData);
+            cmb.SetComputeTextureParam(cs, kernelIndex, Props.HULayerLUT, m_GpuHULUT);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.LayerAppearance, m_GpuLayerAppearance);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatChunks, m_GpuChunks);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatOther, m_GpuOtherData);
@@ -756,6 +934,12 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeIntParam(cs, Props.SplatCount, m_SplatCount);
             cmb.SetComputeIntParam(cs, Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
             cmb.SetComputeIntParam(cs, Props.SplatHasHU, m_HasHU ? 1 : 0);
+            cmb.SetComputeIntParam(cs, Props.HULayerLUTHeight, m_GpuHULUT?.height ?? 0);
+            cmb.SetComputeVectorParam(cs, Props.HUParams, new Vector4(
+                m_HULUTMin,
+                math.max(m_HULUTMax, m_HULUTMin + 1.0f),
+                m_EnableHUMapping ? math.saturate(m_HUColorStrength) : 0.0f,
+                m_HUPreserveLighting ? 1.0f : 0.0f));
             cmb.SetComputeIntParam(cs, Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
 
             UpdateCutoutsBuffer();
@@ -768,6 +952,7 @@ namespace GaussianSplatting.Runtime
             mat.SetBuffer(Props.SplatPos, m_GpuPosData);
             mat.SetBuffer(Props.SplatLayer, m_GpuLayerData);
             mat.SetBuffer(Props.SplatHU, m_GpuHUData);
+            mat.SetTexture(Props.HULayerLUT, m_GpuHULUT);
             mat.SetBuffer(Props.LayerAppearance, m_GpuLayerAppearance);
             mat.SetBuffer(Props.SplatOther, m_GpuOtherData);
             mat.SetBuffer(Props.SplatSH, m_GpuSHData);
@@ -780,6 +965,12 @@ namespace GaussianSplatting.Runtime
             mat.SetInteger(Props.SplatCount, m_SplatCount);
             mat.SetInteger(Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
             mat.SetInteger(Props.SplatHasHU, m_HasHU ? 1 : 0);
+            mat.SetInteger(Props.HULayerLUTHeight, m_GpuHULUT?.height ?? 0);
+            mat.SetVector(Props.HUParams, new Vector4(
+                m_HULUTMin,
+                math.max(m_HULUTMax, m_HULUTMin + 1.0f),
+                m_EnableHUMapping ? math.saturate(m_HUColorStrength) : 0.0f,
+                m_HUPreserveLighting ? 1.0f : 0.0f));
             mat.SetInteger(Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
             mat.SetInteger(Props.OptimizeForQuest, m_OptimizeForQuest ? 1 : 0);
         }
@@ -793,6 +984,8 @@ namespace GaussianSplatting.Runtime
         void DisposeResourcesForAsset()
         {
             DestroyImmediate(m_GpuColorData);
+            DestroyImmediate(m_GpuHULUT);
+            m_GpuHULUT = null;
 
             DisposeBuffer(ref m_GpuPosData);
             DisposeBuffer(ref m_GpuLayerData);

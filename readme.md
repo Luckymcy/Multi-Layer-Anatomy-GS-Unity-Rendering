@@ -4,6 +4,20 @@ This is the rendering package for `Multi-Layer Gaussian Splatting for Immersive 
 
 Follow the original steps to create a compressed GS representation in Unity, each layer will have it's own assets. To render, use the included `GaussianSplatRenderer.cs` script which has been extended to allow selection of which layers to show. Similarly, the `GaussianCutout.cs` script has support for cutting through specified layers.
 
+## HU-aware layer coloring
+
+PLY files can optionally contain a final `property float hu` value for every
+Gaussian. The asset importer preserves HU through layer splitting and Morton
+reordering, stores it in per-layer binary assets, and uploads it to the GPU.
+
+When the selected Gaussian asset contains HU, expand **HU Mapping** on the
+`GaussianSplatRenderer` component. Unity automatically builds a 256-by-layer
+lookup texture from the Low/Center/High HU and color controls. **Layer / HU Mix**
+blends the layer base color with the mapped HU color. Teacher-image RGB chroma
+is discarded; **Preserve SH Lighting** optionally retains only its learned
+view-dependent luminance. HU mapping changes RGB only and does not alter
+Gaussian opacity.
+
 <br>
 
 Note that editiong tools are not tested with multi-layer GS and most likely do not work. 

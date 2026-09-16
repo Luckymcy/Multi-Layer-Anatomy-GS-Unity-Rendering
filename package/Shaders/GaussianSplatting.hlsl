@@ -318,11 +318,16 @@ SplatBufferDataType _SplatSH;
 StructuredBuffer<uint> _SplatLayer;
 StructuredBuffer<float> _SplatHU;
 uint _SplatHasHU;
+Texture2D<float4> _HULayerLUT;
+uint _HULayerLUTHeight;
+// x: global HU minimum, y: global HU maximum,
+// z: mapping strength, w: preserve current SH/layer luminance
+float4 _HUParams;
 
 struct LayerAppearanceData
 {
     float4 color;
-    // x: recolor strength, y: brightness, z: opacity multiplier
+    // x: unused legacy value, y: brightness, z: opacity multiplier
     float4 parameters;
 };
 StructuredBuffer<LayerAppearanceData> _LayerAppearance;
@@ -331,25 +336,63 @@ uint _LayerAppearanceCount;
 Texture2D _SplatColor;
 uint _SplatFormat;
 
-float4 ApplyLayerAppearance(float3 learnedColor, int layer)
+float4 SampleHULayerLUT(float hu, int layer)
 {
-    if (_LayerAppearanceCount == 0)
-        return float4(learnedColor, 1.0);
+    const uint kHULUTWidth = 256;
+    float huRange = max(_HUParams.y - _HUParams.x, 1.0);
+    float hu01 = saturate((hu - _HUParams.x) / huRange);
+    float x = hu01 * (kHULUTWidth - 1);
+    float xFloor = floor(x);
+    uint x0 = (uint)xFloor;
+    uint x1 = min(x0 + 1, kHULUTWidth - 1);
+    uint layerIndex = min((uint)max(layer, 0), _HULayerLUTHeight - 1);
+    float4 low = _HULayerLUT.Load(int3(x0, layerIndex, 0));
+    float4 high = _HULayerLUT.Load(int3(x1, layerIndex, 0));
+    return lerp(low, high, x - xFloor);
+}
 
-    uint layerIndex = min((uint)max(layer, 0), _LayerAppearanceCount - 1);
-    LayerAppearanceData appearance = _LayerAppearance[layerIndex];
-
-    float strength = saturate(appearance.parameters.x);
-    float brightness = max(appearance.parameters.y, 0.0);
-    float opacity = max(appearance.parameters.z, 0.0);
-
-    // Replace hue/chroma while retaining the luminance learned by the SH model.
+float4 ApplyLayerAppearance(float3 learnedColor, int layer, float hu)
+{
     const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
-    float learnedLuminance = max(dot(learnedColor, kLuma), 0.0);
-    float targetLuminance = max(dot(appearance.color.rgb, kLuma), 1e-4);
-    float3 recolored = appearance.color.rgb * (learnedLuminance / targetLuminance) * brightness;
+    float3 layerColor = 1.0;
+    float brightness = 1.0;
+    float opacity = 1.0;
 
-    return float4(lerp(learnedColor, recolored, strength), opacity);
+    if (_LayerAppearanceCount != 0)
+    {
+        uint layerIndex = min((uint)max(layer, 0), _LayerAppearanceCount - 1);
+        LayerAppearanceData appearance = _LayerAppearance[layerIndex];
+        layerColor = appearance.color.rgb;
+        brightness = max(appearance.parameters.y, 0.0);
+        opacity = max(appearance.parameters.z, 0.0);
+    }
+
+    // The mix is exclusively between the anatomical layer base color and the
+    // layer-specific HU lookup color. Teacher-image/SH chroma is never used.
+    float layerHUMix = 0.0;
+    float3 huColor = layerColor;
+    float huCenterLuminance = max(dot(layerColor, kLuma), 1e-4);
+    if (_SplatHasHU != 0 && _HULayerLUTHeight != 0)
+    {
+        float4 huMapping = SampleHULayerLUT(hu, layer);
+        huColor = huMapping.rgb;
+        huCenterLuminance = max(huMapping.a, 1e-4);
+        layerHUMix = saturate(_HUParams.z);
+    }
+
+    float3 anatomyColor = lerp(layerColor, huColor, layerHUMix);
+
+    // Preserve only the grayscale luminance learned from teacher images. This
+    // keeps view-dependent SH lighting while discarding their configured hue.
+    if (_HUParams.w > 0.5)
+    {
+        float learnedLuminance = max(dot(learnedColor, kLuma), 0.0);
+        float layerCenterLuminance = max(dot(layerColor, kLuma), 1e-4);
+        float neutralLuminance = lerp(layerCenterLuminance, huCenterLuminance, layerHUMix);
+        anatomyColor *= learnedLuminance / neutralLuminance;
+    }
+
+    return float4(anatomyColor * brightness, opacity);
 }
 
 // Match GaussianSplatAsset.VectorFormat

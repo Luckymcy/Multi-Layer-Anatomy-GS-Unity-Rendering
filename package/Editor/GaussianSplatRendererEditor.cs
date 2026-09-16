@@ -42,6 +42,7 @@ namespace GaussianSplatting.Editor
 
         bool m_ResourcesExpanded = false;
         bool m_LayerAppearanceExpanded = true;
+        bool m_HUAppearanceExpanded = true;
         int m_CameraIndex = 0;
 
         bool m_ExportBakeTransform;
@@ -154,7 +155,7 @@ namespace GaussianSplatting.Editor
 
                 m_LayerAppearanceExpanded = EditorGUILayout.Foldout(
                     m_LayerAppearanceExpanded,
-                    "Layer Appearance",
+                    "Layer Base Appearance",
                     true,
                     EditorStyles.foldoutHeader);
                 if (m_LayerAppearanceExpanded)
@@ -165,8 +166,7 @@ namespace GaussianSplatting.Editor
                         EditorGUILayout.LabelField($"Layer {layerId}", EditorStyles.boldLabel);
                         EditorGUI.indentLevel++;
                         EditorGUI.BeginChangeCheck();
-                        appearance.color = EditorGUILayout.ColorField("Target Color", appearance.color);
-                        appearance.recolorStrength = EditorGUILayout.Slider("Recolor Strength", appearance.recolorStrength, 0.0f, 1.0f);
+                        appearance.color = EditorGUILayout.ColorField("Base Color", appearance.color);
                         appearance.brightness = EditorGUILayout.Slider("Brightness", appearance.brightness, 0.0f, 3.0f);
                         appearance.opacity = EditorGUILayout.Slider("Layer Opacity", appearance.opacity, 0.0f, 2.0f);
                         if (EditorGUI.EndChangeCheck())
@@ -177,6 +177,86 @@ namespace GaussianSplatting.Editor
                             EditorUtility.SetDirty(gs);
                         }
                         EditorGUI.indentLevel--;
+                    }
+                }
+
+                gs.EnsureHUTransferSettingsCount(appearanceCount);
+                m_HUAppearanceExpanded = EditorGUILayout.Foldout(
+                    m_HUAppearanceExpanded,
+                    "HU Mapping",
+                    true,
+                    EditorStyles.foldoutHeader);
+                if (m_HUAppearanceExpanded)
+                {
+                    if (!gs.asset.hasHU)
+                    {
+                        EditorGUILayout.HelpBox(
+                            "This asset has no per-splat HU data. Recreate it from a PLY containing the float 'hu' property.",
+                            MessageType.Warning);
+                    }
+
+                    using (new EditorGUI.DisabledScope(!gs.asset.hasHU))
+                    {
+                        EditorGUI.BeginChangeCheck();
+                        bool enableHU = EditorGUILayout.Toggle("Enable HU Mapping", gs.m_EnableHUMapping);
+                        float huStrength = EditorGUILayout.Slider(
+                            new GUIContent("Layer / HU Mix", "0 uses Layer Base Color; 1 uses the HU lookup color."),
+                            gs.m_HUColorStrength,
+                            0.0f,
+                            1.0f);
+                        bool preserveLighting = EditorGUILayout.Toggle("Preserve SH Lighting", gs.m_HUPreserveLighting);
+                        float lutMin = EditorGUILayout.FloatField("LUT HU Min", gs.m_HULUTMin);
+                        float lutMax = EditorGUILayout.FloatField("LUT HU Max", gs.m_HULUTMax);
+                        if (EditorGUI.EndChangeCheck())
+                        {
+                            Undo.RecordObject(gs, "Change HU Mapping");
+                            gs.m_EnableHUMapping = enableHU;
+                            gs.m_HUColorStrength = huStrength;
+                            gs.m_HUPreserveLighting = preserveLighting;
+                            gs.m_HULUTMin = lutMin;
+                            gs.m_HULUTMax = lutMax;
+                            gs.UploadHULUT();
+                            EditorUtility.SetDirty(gs);
+                        }
+
+                        if (gs.m_HULUTMax <= gs.m_HULUTMin)
+                            EditorGUILayout.HelpBox("LUT HU Max must be greater than LUT HU Min.", MessageType.Warning);
+
+                        EditorGUILayout.Space();
+                        foreach (int layerId in gs.asset.layerInfo.Keys.OrderBy(id => id))
+                        {
+                            var settings = gs.m_HUTransferSettings[layerId];
+                            EditorGUILayout.LabelField($"Layer {layerId}", EditorStyles.boldLabel);
+                            EditorGUI.indentLevel++;
+                            EditorGUI.BeginChangeCheck();
+                            settings.lowHU = EditorGUILayout.FloatField("Low HU", settings.lowHU);
+                            settings.centerHU = EditorGUILayout.FloatField("Center HU", settings.centerHU);
+                            settings.highHU = EditorGUILayout.FloatField("High HU", settings.highHU);
+                            settings.lowColor = EditorGUILayout.ColorField("Low Color", settings.lowColor);
+                            settings.centerColor = EditorGUILayout.ColorField("Center Color", settings.centerColor);
+                            settings.highColor = EditorGUILayout.ColorField("High Color", settings.highColor);
+                            if (EditorGUI.EndChangeCheck())
+                            {
+                                Undo.RecordObject(gs, $"Change Layer {layerId} HU Mapping");
+                                gs.m_HUTransferSettings[layerId] = settings;
+                                gs.UploadHULUT();
+                                EditorUtility.SetDirty(gs);
+                            }
+                            if (!(settings.lowHU < settings.centerHU && settings.centerHU < settings.highHU))
+                            {
+                                EditorGUILayout.HelpBox(
+                                    "Expected Low HU < Center HU < High HU.",
+                                    MessageType.Warning);
+                            }
+                            EditorGUI.indentLevel--;
+                        }
+
+                        if (GUILayout.Button("Reset HU Mapping Defaults"))
+                        {
+                            Undo.RecordObject(gs, "Reset HU Mapping Defaults");
+                            gs.ResetHUTransferSettings(appearanceCount);
+                            EditorUtility.SetDirty(gs);
+                        }
                     }
                 }
             }
