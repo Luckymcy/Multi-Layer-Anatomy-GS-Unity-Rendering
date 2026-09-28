@@ -292,8 +292,10 @@ namespace GaussianSplatting.Runtime
                         centerColor = new Color(0.48f, 0.14f, 0.11f, 1.0f);
                         break;
                     case 5: // great vessels
-                        lowHU = 0; centerHU = 290; highHU = 435;
-                        centerColor = new Color(0.54f, 0.095f, 0.065f, 1.0f);
+                        // L5_v4 raw HU: p05=63, median=341, p95=439.
+                        lowHU = 63; centerHU = 341; highHU = 439;
+                        // Great-vessel walls are paler and less saturated than myocardium.
+                        centerColor = new Color(0.690f, 0.392f, 0.349f, 1.0f);
                         break;
                     case 6: // coronary arteries
                         lowHU = 180; centerHU = 309; highHU = 465;
@@ -319,6 +321,12 @@ namespace GaussianSplatting.Runtime
                     // it adds natural variation without turning the whole heart yellow.
                     lowColor = new Color(0.58f, 0.38f, 0.14f, 1.0f);
                     highColor = new Color(0.72f, 0.20f, 0.13f, 1.0f);
+                }
+                else if (layer == 5)
+                {
+                    // Muted red-brown shadow -> pink vessel wall -> moist highlight.
+                    lowColor = new Color(0.471f, 0.231f, 0.212f, 1.0f);
+                    highColor = new Color(0.855f, 0.557f, 0.502f, 1.0f);
                 }
                 return new HUTransferSettings
                 {
