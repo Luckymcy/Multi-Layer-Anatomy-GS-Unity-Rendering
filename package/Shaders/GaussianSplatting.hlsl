@@ -211,6 +211,8 @@ struct SplatData
     float3 pos;
     int layer;
     float hu;
+    float huMacro;
+    float huDetail;
     float4 rot;
     float3 scale;
     half opacity;
@@ -317,12 +319,17 @@ SplatBufferDataType _SplatOther;
 SplatBufferDataType _SplatSH;
 StructuredBuffer<uint> _SplatLayer;
 StructuredBuffer<float> _SplatHU;
+StructuredBuffer<float2> _SplatHUFeatures;
 uint _SplatHasHU;
+uint _SplatHasHUFeatures;
 Texture2D<float4> _HULayerLUT;
 uint _HULayerLUTHeight;
 // x: global HU minimum, y: global HU maximum,
 // z: mapping strength, w: preserve current SH/layer luminance
 float4 _HUParams;
+// x: enable multiscale HU, y: raw-to-macro HU blend,
+// z: detail brightness strength, w: HU detail normalization range
+float4 _HUTissueParams;
 
 struct LayerAppearanceData
 {
@@ -351,7 +358,12 @@ float4 SampleHULayerLUT(float hu, int layer)
     return lerp(low, high, x - xFloor);
 }
 
-float4 ApplyLayerAppearance(float3 learnedColor, int layer, float hu)
+float4 ApplyLayerAppearance(
+    float3 learnedColor,
+    int layer,
+    float hu,
+    float huMacro,
+    float huDetail)
 {
     const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
     float3 layerColor = 1.0;
@@ -372,15 +384,31 @@ float4 ApplyLayerAppearance(float3 learnedColor, int layer, float hu)
     float layerHUMix = 0.0;
     float3 huColor = layerColor;
     float huCenterLuminance = max(dot(layerColor, kLuma), 1e-4);
+    bool useMultiscaleHU =
+        layer == 4 &&
+        _SplatHasHUFeatures != 0 &&
+        _HUTissueParams.x > 0.5;
+    float mappingHU = useMultiscaleHU
+        ? lerp(hu, huMacro, saturate(_HUTissueParams.y))
+        : hu;
     if (_SplatHasHU != 0 && _HULayerLUTHeight != 0)
     {
-        float4 huMapping = SampleHULayerLUT(hu, layer);
+        float4 huMapping = SampleHULayerLUT(mappingHU, layer);
         huColor = huMapping.rgb;
         huCenterLuminance = max(huMapping.a, 1e-4);
         layerHUMix = saturate(_HUParams.z);
     }
 
     float3 anatomyColor = lerp(layerColor, huColor, layerHUMix);
+
+    // The band-pass CT residual contains local patient-specific density
+    // variation. Keep it subtle: it modulates luminance, not anatomical hue.
+    if (useMultiscaleHU)
+    {
+        float detailRange = max(_HUTissueParams.w, 1.0);
+        float detail = clamp(huDetail / detailRange, -1.0, 1.0);
+        anatomyColor *= max(0.0, 1.0 + detail * max(_HUTissueParams.z, 0.0));
+    }
 
     // Preserve only the grayscale luminance learned from teacher images. This
     // keeps view-dependent SH lighting while discarding their configured hue.
@@ -541,6 +569,11 @@ SplatData LoadSplatData(uint idx)
     // load raw splat data, which might be chunk-relative
     s.layer     = (int)_SplatLayer[idx];
     s.hu        = _SplatHasHU != 0 ? _SplatHU[idx] : 0.0;
+    float2 huFeatures = _SplatHasHUFeatures != 0
+        ? _SplatHUFeatures[idx]
+        : float2(s.hu, 0.0);
+    s.huMacro   = huFeatures.x;
+    s.huDetail  = huFeatures.y;
     s.pos       = LoadSplatPosValue(idx);
     s.rot       = DecodeRotation(DecodePacked_10_10_10_2(LoadUInt(_SplatOther, otherAddr)));
     s.scale     = LoadAndDecodeVector(_SplatOther, otherAddr + 4, scaleFmt);

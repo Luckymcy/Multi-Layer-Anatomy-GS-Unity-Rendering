@@ -284,8 +284,12 @@ namespace GaussianSplatting.Runtime
                         centerColor = new Color(0.44f, 0.075f, 0.06f, 1.0f);
                         break;
                     case 4: // myocardium
-                        lowHU = 15; centerHU = 89; highHU = 370;
-                        centerColor = new Color(0.50f, 0.085f, 0.065f, 1.0f);
+                        // L4_v4 raw HU: p05=-41, median=93, p95=400.
+                        // The default 75% macro blend has an effective p95 near 310 HU.
+                        lowHU = -40; centerHU = 93; highHU = 310;
+                        // Warm deep red-brown (#7A241C): a neutral gross-anatomy
+                        // myocardium color, avoiding both synthetic scarlet and purple.
+                        centerColor = new Color(0.48f, 0.14f, 0.11f, 1.0f);
                         break;
                     case 5: // great vessels
                         lowHU = 0; centerHU = 290; highHU = 435;
@@ -308,6 +312,14 @@ namespace GaussianSplatting.Runtime
                     1.0f);
                 Color warmHighlight = new Color(1.0f, 0.48f, 0.36f, 1.0f);
                 Color highColor = Color.Lerp(centerColor, warmHighlight, 0.35f);
+                if (layer == 4)
+                {
+                    // Very low-HU surface samples are primarily epicardial fat or
+                    // fat/muscle partial volume; keep this warm and restrained so
+                    // it adds natural variation without turning the whole heart yellow.
+                    lowColor = new Color(0.58f, 0.38f, 0.14f, 1.0f);
+                    highColor = new Color(0.72f, 0.20f, 0.13f, 1.0f);
+                }
                 return new HUTransferSettings
                 {
                     lowHU = lowHU,
@@ -370,6 +382,14 @@ namespace GaussianSplatting.Runtime
         [SerializeField] public float m_HULUTMin = -100.0f;
         [SerializeField] public float m_HULUTMax = 600.0f;
         [SerializeField] public List<HUTransferSettings> m_HUTransferSettings = new();
+        [Tooltip("Use CT-derived broad HU and band-pass HU detail when the asset contains them.")]
+        [SerializeField] public bool m_EnableMultiscaleHU = true;
+        [Tooltip("0 uses raw HU for color mapping; 1 uses the 5 mm broad-scale HU.")]
+        [SerializeField, Range(0.0f, 1.0f)] public float m_HUMacroBlend = 0.75f;
+        [Tooltip("Brightness modulation produced by band-pass HU detail.")]
+        [SerializeField, Range(0.0f, 0.2f)] public float m_HUDetailStrength = 0.07f;
+        [Tooltip("Absolute HU detail that reaches full modulation strength.")]
+        [SerializeField, Min(1.0f)] public float m_HUDetailRange = 80.0f;
 
         int m_SplatCount; // initially same as asset splat count, but editing can change this
         GraphicsBuffer m_GpuSortDistances;
@@ -379,6 +399,7 @@ namespace GaussianSplatting.Runtime
         GraphicsBuffer m_GpuSHData;
         private GraphicsBuffer m_GpuLayerData;
         private GraphicsBuffer m_GpuHUData;
+        private GraphicsBuffer m_GpuHUFeatureData;
         private GraphicsBuffer m_GpuLayerAppearance;
         Texture2D m_GpuHULUT;
         Texture m_GpuColorData;
@@ -390,6 +411,7 @@ namespace GaussianSplatting.Runtime
         internal Matrix4x4 m_centerCamMatrix;
         public bool m_OptimizeForQuest;
         bool m_HasHU;
+        bool m_HasHUFeatures;
 
 
         // these buffers are only for splat editing, and are lazily created
@@ -420,10 +442,13 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatPos = Shader.PropertyToID("_SplatPos");
             public static readonly int SplatLayer = Shader.PropertyToID("_SplatLayer");
             public static readonly int SplatHU = Shader.PropertyToID("_SplatHU");
+            public static readonly int SplatHUFeatures = Shader.PropertyToID("_SplatHUFeatures");
             public static readonly int SplatHasHU = Shader.PropertyToID("_SplatHasHU");
+            public static readonly int SplatHasHUFeatures = Shader.PropertyToID("_SplatHasHUFeatures");
             public static readonly int HULayerLUT = Shader.PropertyToID("_HULayerLUT");
             public static readonly int HULayerLUTHeight = Shader.PropertyToID("_HULayerLUTHeight");
             public static readonly int HUParams = Shader.PropertyToID("_HUParams");
+            public static readonly int HUTissueParams = Shader.PropertyToID("_HUTissueParams");
             public static readonly int LayerAppearance = Shader.PropertyToID("_LayerAppearance");
             public static readonly int LayerAppearanceCount = Shader.PropertyToID("_LayerAppearanceCount");
             public static readonly int SplatOther = Shader.PropertyToID("_SplatOther");
@@ -511,6 +536,7 @@ namespace GaussianSplatting.Runtime
             m_GpuChunks != null &&
             m_GpuLayerData != null &&
             m_GpuHUData != null &&
+            m_GpuHUFeatureData != null &&
             m_GpuHULUT != null;
 
         const int kGpuViewDataSize = 40;
@@ -582,7 +608,9 @@ namespace GaussianSplatting.Runtime
             var chunkDataArr = new NativeArray<byte>(chunkSize, Allocator.Temp);
             var layerDataArr = new NativeArray<uint>(m_SplatCount, Allocator.Temp);
             var huDataArr = new NativeArray<float>(m_SplatCount, Allocator.Temp, NativeArrayOptions.ClearMemory);
+            var huFeatureDataArr = new NativeArray<float2>(m_SplatCount, Allocator.Temp, NativeArrayOptions.ClearMemory);
             m_HasHU = activeLayerAssets.Count > 0 && activeLayerAssets.All(l => l.m_HUData != null);
+            m_HasHUFeatures = m_HasHU && activeLayerAssets.All(l => l.m_HUFeatureData != null);
             int layerMarker = 0;
             int huMarker = 0;
             
@@ -608,6 +636,22 @@ namespace GaussianSplatting.Runtime
                     {
                         var huSub = huDataArr.GetSubArray(huMarker, layerSplatCount);
                         huSub.CopyFrom(huAssetData);
+                    }
+                }
+                if (m_HasHUFeatures)
+                {
+                    var huFeatureAssetData = layerAssets.m_HUFeatureData.GetData<float2>();
+                    if (huFeatureAssetData.Length != layerSplatCount)
+                    {
+                        Debug.LogError(
+                            $"Multiscale HU data count mismatch in layer {layerAssets.layer}: " +
+                            $"expected {layerSplatCount}, got {huFeatureAssetData.Length}", this);
+                        m_HasHUFeatures = false;
+                    }
+                    else
+                    {
+                        var huFeatureSub = huFeatureDataArr.GetSubArray(huMarker, layerSplatCount);
+                        huFeatureSub.CopyFrom(huFeatureAssetData);
                     }
                 }
                 huMarker += layerSplatCount;
@@ -651,6 +695,12 @@ namespace GaussianSplatting.Runtime
 
             m_GpuHUData = new GraphicsBuffer(GraphicsBuffer.Target.Structured, huDataArr.Length, sizeof(float)) { name = "GaussianHUData" };
             m_GpuHUData.SetData(huDataArr);
+
+            m_GpuHUFeatureData = new GraphicsBuffer(
+                GraphicsBuffer.Target.Structured,
+                huFeatureDataArr.Length,
+                UnsafeUtility.SizeOf<float2>()) { name = "GaussianHUFeatureData" };
+            m_GpuHUFeatureData.SetData(huFeatureDataArr);
 
             UploadLayerAppearanceData();
             UploadHULUT();
@@ -705,6 +755,7 @@ namespace GaussianSplatting.Runtime
             shDataArr.Dispose();
             colorDataArr.Dispose();
             huDataArr.Dispose();
+            huFeatureDataArr.Dispose();
             chunkDataArr.Dispose();
             layerDataArr.Dispose();
 
@@ -917,6 +968,7 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatPos, m_GpuPosData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatLayer, m_GpuLayerData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHU, m_GpuHUData);
+            cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHUFeatures, m_GpuHUFeatureData);
             cmb.SetComputeTextureParam(cs, kernelIndex, Props.HULayerLUT, m_GpuHULUT);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.LayerAppearance, m_GpuLayerAppearance);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatChunks, m_GpuChunks);
@@ -934,12 +986,18 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeIntParam(cs, Props.SplatCount, m_SplatCount);
             cmb.SetComputeIntParam(cs, Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
             cmb.SetComputeIntParam(cs, Props.SplatHasHU, m_HasHU ? 1 : 0);
+            cmb.SetComputeIntParam(cs, Props.SplatHasHUFeatures, m_HasHUFeatures ? 1 : 0);
             cmb.SetComputeIntParam(cs, Props.HULayerLUTHeight, m_GpuHULUT?.height ?? 0);
             cmb.SetComputeVectorParam(cs, Props.HUParams, new Vector4(
                 m_HULUTMin,
                 math.max(m_HULUTMax, m_HULUTMin + 1.0f),
                 m_EnableHUMapping ? math.saturate(m_HUColorStrength) : 0.0f,
                 m_HUPreserveLighting ? 1.0f : 0.0f));
+            cmb.SetComputeVectorParam(cs, Props.HUTissueParams, new Vector4(
+                m_EnableMultiscaleHU ? 1.0f : 0.0f,
+                math.saturate(m_HUMacroBlend),
+                math.max(m_HUDetailStrength, 0.0f),
+                math.max(m_HUDetailRange, 1.0f)));
             cmb.SetComputeIntParam(cs, Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
 
             UpdateCutoutsBuffer();
@@ -952,6 +1010,7 @@ namespace GaussianSplatting.Runtime
             mat.SetBuffer(Props.SplatPos, m_GpuPosData);
             mat.SetBuffer(Props.SplatLayer, m_GpuLayerData);
             mat.SetBuffer(Props.SplatHU, m_GpuHUData);
+            mat.SetBuffer(Props.SplatHUFeatures, m_GpuHUFeatureData);
             mat.SetTexture(Props.HULayerLUT, m_GpuHULUT);
             mat.SetBuffer(Props.LayerAppearance, m_GpuLayerAppearance);
             mat.SetBuffer(Props.SplatOther, m_GpuOtherData);
@@ -965,12 +1024,18 @@ namespace GaussianSplatting.Runtime
             mat.SetInteger(Props.SplatCount, m_SplatCount);
             mat.SetInteger(Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
             mat.SetInteger(Props.SplatHasHU, m_HasHU ? 1 : 0);
+            mat.SetInteger(Props.SplatHasHUFeatures, m_HasHUFeatures ? 1 : 0);
             mat.SetInteger(Props.HULayerLUTHeight, m_GpuHULUT?.height ?? 0);
             mat.SetVector(Props.HUParams, new Vector4(
                 m_HULUTMin,
                 math.max(m_HULUTMax, m_HULUTMin + 1.0f),
                 m_EnableHUMapping ? math.saturate(m_HUColorStrength) : 0.0f,
                 m_HUPreserveLighting ? 1.0f : 0.0f));
+            mat.SetVector(Props.HUTissueParams, new Vector4(
+                m_EnableMultiscaleHU ? 1.0f : 0.0f,
+                math.saturate(m_HUMacroBlend),
+                math.max(m_HUDetailStrength, 0.0f),
+                math.max(m_HUDetailRange, 1.0f)));
             mat.SetInteger(Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
             mat.SetInteger(Props.OptimizeForQuest, m_OptimizeForQuest ? 1 : 0);
         }
@@ -990,6 +1055,7 @@ namespace GaussianSplatting.Runtime
             DisposeBuffer(ref m_GpuPosData);
             DisposeBuffer(ref m_GpuLayerData);
             DisposeBuffer(ref m_GpuHUData);
+            DisposeBuffer(ref m_GpuHUFeatureData);
             DisposeBuffer(ref m_GpuLayerAppearance);
             DisposeBuffer(ref m_GpuOtherData);
             DisposeBuffer(ref m_GpuSHData);
@@ -1013,6 +1079,7 @@ namespace GaussianSplatting.Runtime
             m_SplatCount = 0;
             m_GpuChunksValid = false;
             m_HasHU = false;
+            m_HasHUFeatures = false;
 
             editSelectedSplats = 0;
             editDeletedSplats = 0;

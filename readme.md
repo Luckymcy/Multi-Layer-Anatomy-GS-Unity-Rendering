@@ -6,9 +6,11 @@ Follow the original steps to create a compressed GS representation in Unity, eac
 
 ## HU-aware layer coloring
 
-PLY files can optionally contain a final `property float hu` value for every
-Gaussian. The asset importer preserves HU through layer splitting and Morton
-reordering, stores it in per-layer binary assets, and uploads it to the GPU.
+PLY files can optionally contain final `hu`, `hu_macro`, and `hu_detail` float
+values for every Gaussian. The importer remains compatible with older PLY files
+that contain only `hu`. It preserves the values through layer splitting and
+Morton reordering, stores them in per-layer binary assets, and uploads them to
+the GPU.
 
 When the selected Gaussian asset contains HU, expand **HU Mapping** on the
 `GaussianSplatRenderer` component. Unity automatically builds a 256-by-layer
@@ -17,6 +19,11 @@ blends the layer base color with the mapped HU color. Teacher-image RGB chroma
 is discarded; **Preserve SH Lighting** optionally retains only its learned
 view-dependent luminance. HU mapping changes RGB only and does not alter
 Gaussian opacity.
+
+When multiscale HU is available, **Macro HU Blend** selects raw versus broadly
+smoothed HU for the color lookup. **Detail Strength** uses the patient-specific
+band-pass HU residual for subtle local luminance texture; it is applied only to
+L4.
 
 <br>
 

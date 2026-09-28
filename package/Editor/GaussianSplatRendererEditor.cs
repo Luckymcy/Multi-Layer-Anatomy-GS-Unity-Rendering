@@ -194,6 +194,13 @@ namespace GaussianSplatting.Editor
                             "This asset has no per-splat HU data. Recreate it from a PLY containing the float 'hu' property.",
                             MessageType.Warning);
                     }
+                    else if (!gs.asset.hasHUFeatures)
+                    {
+                        EditorGUILayout.HelpBox(
+                            "This asset has raw HU only. Recreate it from a PLY containing " +
+                            "'hu_macro' and 'hu_detail' to enable CT-derived tissue texture.",
+                            MessageType.Info);
+                    }
 
                     using (new EditorGUI.DisabledScope(!gs.asset.hasHU))
                     {
@@ -205,6 +212,27 @@ namespace GaussianSplatting.Editor
                             0.0f,
                             1.0f);
                         bool preserveLighting = EditorGUILayout.Toggle("Preserve SH Lighting", gs.m_HUPreserveLighting);
+                        bool enableMultiscaleHU = EditorGUILayout.Toggle(
+                            "Enable Multiscale HU", gs.m_EnableMultiscaleHU);
+                        float macroBlend = gs.m_HUMacroBlend;
+                        float detailStrength = gs.m_HUDetailStrength;
+                        float detailRange = gs.m_HUDetailRange;
+                        using (new EditorGUI.DisabledScope(!gs.asset.hasHUFeatures || !enableMultiscaleHU))
+                        {
+                            macroBlend = EditorGUILayout.Slider(
+                                new GUIContent("Macro HU Blend", "0 uses raw HU; 1 uses broad 5 mm HU for the color lookup."),
+                                macroBlend,
+                                0.0f,
+                                1.0f);
+                            detailStrength = EditorGUILayout.Slider(
+                                new GUIContent("Detail Strength", "Maximum brightness modulation from local CT HU detail."),
+                                detailStrength,
+                                0.0f,
+                                0.2f);
+                            detailRange = EditorGUILayout.FloatField(
+                                new GUIContent("Detail HU Range", "Absolute band-pass HU value that reaches full detail strength."),
+                                detailRange);
+                        }
                         float lutMin = EditorGUILayout.FloatField("LUT HU Min", gs.m_HULUTMin);
                         float lutMax = EditorGUILayout.FloatField("LUT HU Max", gs.m_HULUTMax);
                         if (EditorGUI.EndChangeCheck())
@@ -213,6 +241,10 @@ namespace GaussianSplatting.Editor
                             gs.m_EnableHUMapping = enableHU;
                             gs.m_HUColorStrength = huStrength;
                             gs.m_HUPreserveLighting = preserveLighting;
+                            gs.m_EnableMultiscaleHU = enableMultiscaleHU;
+                            gs.m_HUMacroBlend = macroBlend;
+                            gs.m_HUDetailStrength = detailStrength;
+                            gs.m_HUDetailRange = Mathf.Max(1.0f, detailRange);
                             gs.m_HULUTMin = lutMin;
                             gs.m_HULUTMax = lutMax;
                             gs.UploadHULUT();

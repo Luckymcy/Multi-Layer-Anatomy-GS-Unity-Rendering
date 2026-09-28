@@ -52,8 +52,9 @@ namespace GaussianSplatting.Editor
             long sizeSH = gs.shDataSize;
             long sizeChunk = gs.chunkDataSize;
             long sizeHU = gs.huDataSize;
+            long sizeHUFeatures = gs.huFeatureDataSize;
 
-            EditorGUILayout.TextField("Memory", EditorUtility.FormatBytes(sizePos + sizeOther + sizeSH + sizeCol + sizeChunk + sizeHU));
+            EditorGUILayout.TextField("Memory", EditorUtility.FormatBytes(sizePos + sizeOther + sizeSH + sizeCol + sizeChunk + sizeHU + sizeHUFeatures));
             EditorGUI.indentLevel++;
             EditorGUILayout.TextField("Positions", $"{EditorUtility.FormatBytes(sizePos)}  ({gs.posFormat})");
             EditorGUILayout.TextField("Other", $"{EditorUtility.FormatBytes(sizeOther)}  ({gs.scaleFormat})");
@@ -62,6 +63,11 @@ namespace GaussianSplatting.Editor
             EditorGUILayout.TextField("Chunks",
                 $"{EditorUtility.FormatBytes(sizeChunk)}  ({UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>()} B/chunk)");
             EditorGUILayout.TextField("HU", gs.hasHU ? $"{EditorUtility.FormatBytes(sizeHU)}  (4 B/splat)" : "Not available");
+            EditorGUILayout.TextField(
+                "Multiscale HU",
+                gs.hasHUFeatures
+                    ? $"{EditorUtility.FormatBytes(sizeHUFeatures)}  (8 B/splat)"
+                    : "Not available");
             EditorGUI.indentLevel--;
 
             EditorGUILayout.Vector3Field("Bounds Min", gs.boundsMin);
