@@ -42,6 +42,7 @@ namespace GaussianSplatting.Editor
 
         bool m_ResourcesExpanded = false;
         bool m_LayerAppearanceExpanded = true;
+        bool m_LightingExpanded = true;
         bool m_HUAppearanceExpanded = true;
         int m_CameraIndex = 0;
 
@@ -180,6 +181,49 @@ namespace GaussianSplatting.Editor
                     }
                 }
 
+                m_LightingExpanded = EditorGUILayout.Foldout(
+                    m_LightingExpanded,
+                    "Lighting & Surface Highlights",
+                    true,
+                    EditorStyles.foldoutHeader);
+                if (m_LightingExpanded)
+                {
+                    EditorGUI.BeginChangeCheck();
+                    bool preserveLighting = EditorGUILayout.Toggle(
+                        new GUIContent("Preserve SH Lighting", "Use the teacher's learned grayscale shading without its hue."),
+                        gs.m_HUPreserveLighting);
+                    float lightingInfluence = gs.m_SHLightingInfluence;
+                    using (new EditorGUI.DisabledScope(!preserveLighting))
+                    {
+                        lightingInfluence = EditorGUILayout.Slider(
+                            new GUIContent("L4/L5 Learned Brightness", "0 keeps the selected layer/HU brightness; 1 uses the full learned teacher brightness for L4 and L5."),
+                            lightingInfluence, 0.0f, 1.0f);
+                    }
+                    float l4Highlight = EditorGUILayout.Slider(
+                        "L4 Highlight Strength", gs.m_L4HighlightStrength, 0.0f, 1.0f);
+                    float l5Highlight = EditorGUILayout.Slider(
+                        "L5 Highlight Strength", gs.m_L5HighlightStrength, 0.0f, 1.0f);
+                    float highlightSharpness = EditorGUILayout.Slider(
+                        "Highlight Sharpness", gs.m_HighlightSharpness, 4.0f, 128.0f);
+                    Vector3 highlightDirection = EditorGUILayout.Vector3Field(
+                        new GUIContent("Highlight Light Direction", "Camera-relative direction: X right, Y up, Z toward the viewer."),
+                        gs.m_HighlightLightDirection);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        Undo.RecordObject(gs, "Change Splat Lighting");
+                        gs.m_HUPreserveLighting = preserveLighting;
+                        gs.m_SHLightingInfluence = lightingInfluence;
+                        gs.m_L4HighlightStrength = l4Highlight;
+                        gs.m_L5HighlightStrength = l5Highlight;
+                        gs.m_HighlightSharpness = highlightSharpness;
+                        gs.m_HighlightLightDirection = highlightDirection;
+                        EditorUtility.SetDirty(gs);
+                    }
+                    EditorGUILayout.HelpBox(
+                        "Highlights use the flattest Gaussian axis as an approximate surface normal. Set a layer's strength to 0 to compare without highlights.",
+                        MessageType.Info);
+                }
+
                 gs.EnsureHUTransferSettingsCount(appearanceCount);
                 m_HUAppearanceExpanded = EditorGUILayout.Foldout(
                     m_HUAppearanceExpanded,
@@ -211,7 +255,6 @@ namespace GaussianSplatting.Editor
                             gs.m_HUColorStrength,
                             0.0f,
                             1.0f);
-                        bool preserveLighting = EditorGUILayout.Toggle("Preserve SH Lighting", gs.m_HUPreserveLighting);
                         bool enableMultiscaleHU = EditorGUILayout.Toggle(
                             "Enable Multiscale HU", gs.m_EnableMultiscaleHU);
                         float macroBlend = gs.m_HUMacroBlend;
@@ -240,7 +283,6 @@ namespace GaussianSplatting.Editor
                             Undo.RecordObject(gs, "Change HU Mapping");
                             gs.m_EnableHUMapping = enableHU;
                             gs.m_HUColorStrength = huStrength;
-                            gs.m_HUPreserveLighting = preserveLighting;
                             gs.m_EnableMultiscaleHU = enableMultiscaleHU;
                             gs.m_HUMacroBlend = macroBlend;
                             gs.m_HUDetailStrength = detailStrength;

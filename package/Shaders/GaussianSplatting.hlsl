@@ -330,6 +330,10 @@ float4 _HUParams;
 // x: enable multiscale HU, y: raw-to-macro HU blend,
 // z: detail brightness strength, w: HU detail normalization range
 float4 _HUTissueParams;
+float _SHLightingInfluence;
+// x: L4 highlight strength, y: L5 highlight strength, z: sharpness.
+float4 _SurfaceHighlightParams;
+float4 _SurfaceHighlightLightDirection;
 
 struct LayerAppearanceData
 {
@@ -417,10 +421,60 @@ float4 ApplyLayerAppearance(
         float learnedLuminance = max(dot(learnedColor, kLuma), 0.0);
         float layerCenterLuminance = max(dot(layerColor, kLuma), 1e-4);
         float neutralLuminance = lerp(layerCenterLuminance, huCenterLuminance, layerHUMix);
-        anatomyColor *= learnedLuminance / neutralLuminance;
+        float learnedLighting = learnedLuminance / neutralLuminance;
+        float influence = (layer == 4 || layer == 5) ?
+            saturate(_SHLightingInfluence) : 1.0;
+        anatomyColor *= lerp(1.0, learnedLighting, influence);
     }
 
     return float4(anatomyColor * brightness, opacity);
+}
+
+float3 ApplySurfaceHighlight(
+    float3 color,
+    SplatData splat,
+    float3 viewDirectionWorld,
+    float3x3 normalToWorld)
+{
+    float strength = splat.layer == 4 ? _SurfaceHighlightParams.x :
+        (splat.layer == 5 ? _SurfaceHighlightParams.y : 0.0);
+    if (strength <= 0.0)
+        return color;
+
+    // The shortest ellipsoid axis approximates a surface normal only for
+    // flattened Gaussians. Fade the effect for nearly spherical splats.
+    float3 scale = abs(splat.scale);
+    float3 normalAxis = float3(1.0, 0.0, 0.0);
+    float shortest = scale.x;
+    float secondShortest = min(scale.y, scale.z);
+    if (scale.y < shortest)
+    {
+        secondShortest = min(shortest, scale.z);
+        shortest = scale.y;
+        normalAxis = float3(0.0, 1.0, 0.0);
+    }
+    if (scale.z < shortest)
+    {
+        secondShortest = shortest;
+        shortest = scale.z;
+        normalAxis = float3(0.0, 0.0, 1.0);
+    }
+    float surfaceConfidence = saturate(
+        2.0 * (secondShortest - shortest) / max(secondShortest, 1e-5));
+    if (surfaceConfidence <= 0.0)
+        return color;
+
+    float3 normalWorld = normalize(mul(normalToWorld,
+        QuatRotateVector(normalAxis, splat.rot)));
+    normalWorld *= dot(normalWorld, viewDirectionWorld) < 0.0 ? -1.0 : 1.0;
+    float3 lightDirection = normalize(_SurfaceHighlightLightDirection.xyz);
+    float3 halfDirection = normalize(lightDirection + viewDirectionWorld +
+        1e-5 * viewDirectionWorld);
+    float highlight = pow(saturate(dot(normalWorld, halfDirection)),
+        max(_SurfaceHighlightParams.z, 1.0));
+    highlight *= saturate(dot(normalWorld, lightDirection));
+    highlight *= surfaceConfidence * strength;
+    return color + highlight * float3(1.0, 0.90, 0.84);
 }
 
 // Match GaussianSplatAsset.VectorFormat

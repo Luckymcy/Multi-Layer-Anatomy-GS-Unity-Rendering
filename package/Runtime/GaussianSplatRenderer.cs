@@ -387,6 +387,16 @@ namespace GaussianSplatting.Runtime
         [SerializeField, Range(0.0f, 1.0f)] public float m_HUColorStrength = 0.5f;
         [Tooltip("Use only the grayscale luminance learned by SH; teacher-image hue is always discarded.")]
         [SerializeField] public bool m_HUPreserveLighting = true;
+        [Tooltip("How strongly teacher-image grayscale brightness affects L4/L5. 0 keeps the selected color brightness; 1 uses the full learned brightness.")]
+        [SerializeField, Range(0.0f, 1.0f)] public float m_SHLightingInfluence = 0.45f;
+        [Tooltip("Wet surface highlight intensity for the myocardium (L4). Set to 0 to disable.")]
+        [SerializeField, Range(0.0f, 1.0f)] public float m_L4HighlightStrength = 0.16f;
+        [Tooltip("Wet surface highlight intensity for the great vessels (L5). Set to 0 to disable.")]
+        [SerializeField, Range(0.0f, 1.0f)] public float m_L5HighlightStrength = 0.22f;
+        [Tooltip("Higher values make the highlights smaller and sharper.")]
+        [SerializeField, Range(4.0f, 128.0f)] public float m_HighlightSharpness = 32.0f;
+        [Tooltip("Highlight light direction relative to the camera: X right, Y up, Z toward the camera.")]
+        [SerializeField] public Vector3 m_HighlightLightDirection = new(-0.35f, 0.55f, 1.0f);
         [SerializeField] public float m_HULUTMin = -100.0f;
         [SerializeField] public float m_HULUTMax = 600.0f;
         [SerializeField] public List<HUTransferSettings> m_HUTransferSettings = new();
@@ -457,6 +467,9 @@ namespace GaussianSplatting.Runtime
             public static readonly int HULayerLUTHeight = Shader.PropertyToID("_HULayerLUTHeight");
             public static readonly int HUParams = Shader.PropertyToID("_HUParams");
             public static readonly int HUTissueParams = Shader.PropertyToID("_HUTissueParams");
+            public static readonly int SHLightingInfluence = Shader.PropertyToID("_SHLightingInfluence");
+            public static readonly int SurfaceHighlightParams = Shader.PropertyToID("_SurfaceHighlightParams");
+            public static readonly int SurfaceHighlightLightDirection = Shader.PropertyToID("_SurfaceHighlightLightDirection");
             public static readonly int LayerAppearance = Shader.PropertyToID("_LayerAppearance");
             public static readonly int LayerAppearanceCount = Shader.PropertyToID("_LayerAppearanceCount");
             public static readonly int SplatOther = Shader.PropertyToID("_SplatOther");
@@ -1140,6 +1153,19 @@ namespace GaussianSplatting.Runtime
 
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.VecScreenParams, screenPar);
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.VecWorldSpaceCameraPos, camPos);
+            cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SHLightingInfluence,
+                m_HUPreserveLighting ? math.saturate(m_SHLightingInfluence) : 0.0f);
+            cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.SurfaceHighlightParams, new Vector4(
+                math.saturate(m_L4HighlightStrength),
+                math.saturate(m_L5HighlightStrength),
+                math.max(m_HighlightSharpness, 1.0f),
+                0.0f));
+            Vector3 lightDirection = m_HighlightLightDirection.sqrMagnitude > 0.0001f
+                ? m_HighlightLightDirection.normalized
+                : Vector3.forward;
+            lightDirection = cam.transform.TransformDirection(lightDirection);
+            cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.SurfaceHighlightLightDirection,
+                new Vector4(lightDirection.x, lightDirection.y, lightDirection.z, 0.0f));
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatScale, m_SplatScale);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatOpacityScale, m_OpacityScale);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOrder, m_SHOrder);
