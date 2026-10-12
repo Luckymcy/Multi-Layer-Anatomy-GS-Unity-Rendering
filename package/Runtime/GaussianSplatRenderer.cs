@@ -301,6 +301,11 @@ namespace GaussianSplatting.Runtime
                         lowHU = 180; centerHU = 309; highHU = 465;
                         centerColor = new Color(0.64f, 0.12f, 0.075f, 1.0f);
                         break;
+                    case 7: // heart-adjacent fat
+                        // L7_v4 raw HU: p05=-122, median=-79, p95=-13.
+                        lowHU = -122; centerHU = -79; highHU = -13;
+                        centerColor = new Color(0.84f, 0.72f, 0.50f, 1.0f);
+                        break;
                     default:
                         lowHU = 0; centerHU = 100; highHU = 400;
                         centerColor = new Color(0.50f, 0.09f, 0.065f, 1.0f);
@@ -327,6 +332,13 @@ namespace GaussianSplatting.Runtime
                     // Muted red-brown shadow -> pink vessel wall -> moist highlight.
                     lowColor = new Color(0.471f, 0.231f, 0.212f, 1.0f);
                     highColor = new Color(0.855f, 0.557f, 0.502f, 1.0f);
+                }
+                else if (layer == 7)
+                {
+                    // Preserve fat's warm cream/yellow range rather than the red
+                    // highlight used for muscle and blood-vessel layers.
+                    lowColor = new Color(0.68f, 0.52f, 0.33f, 1.0f);
+                    highColor = new Color(0.95f, 0.86f, 0.68f, 1.0f);
                 }
                 return new HUTransferSettings
                 {
