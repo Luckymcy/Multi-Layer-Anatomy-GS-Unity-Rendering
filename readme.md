@@ -6,6 +6,10 @@ Follow the original steps to create a compressed GS representation in Unity, eac
 
 ## HU-aware layer coloring
 
+Learned multi-control-point RGB LUTs can be imported from training JSON and
+switched in the Inspector or a desktop Game-view comparison panel. See
+[JSON import and version comparison](docs/learned-lut-json.md).
+
 PLY files can optionally contain final `hu`, `hu_macro`, and `hu_detail` float
 values for every Gaussian. The importer remains compatible with older PLY files
 that contain only `hu`. It preserves the values through layer splitting and

@@ -86,10 +86,20 @@ namespace GaussianSplatting.Editor
             m_gpuSortType = serializedObject.FindProperty("m_gpuSortType");
             m_PropOptimizeForQuest = serializedObject.FindProperty("m_OptimizeForQuest");
             s_AllEditors.Add(this);
+            Undo.undoRedoPerformed += RefreshLearnedLUTAfterUndo;
+        }
+
+        void RefreshLearnedLUTAfterUndo()
+        {
+            foreach (var item in targets)
+                if (item is GaussianSplatRenderer renderer && renderer.HasValidAsset)
+                    renderer.UploadHULUT();
+            Repaint();
         }
 
         public void OnDisable()
         {
+            Undo.undoRedoPerformed -= RefreshLearnedLUTAfterUndo;
             s_AllEditors.Remove(this);
         }
 
@@ -334,6 +344,9 @@ namespace GaussianSplatting.Editor
                     }
                 }
             }
+
+            if (targets.Length == 1) LearnedLUTControls.Draw(gs);
+            else EditorGUILayout.HelpBox("Select a single renderer to import or compare learned LUT JSON versions.", MessageType.Info);
 
             EditorGUILayout.Space();
             GUILayout.Label("Debugging Tweaks", EditorStyles.boldLabel);

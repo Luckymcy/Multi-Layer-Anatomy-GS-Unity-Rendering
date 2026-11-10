@@ -324,6 +324,42 @@ uint _SplatHasHU;
 uint _SplatHasHUFeatures;
 Texture2D<float4> _HULayerLUT;
 uint _HULayerLUTHeight;
+// Exact imported control points: RGB is linear light, A is raw HU position.
+Texture2D<float4> _LearnedLUT;
+int _LearnedLUTLayer;
+uint _LearnedLUTCount;
+
+bool HasLearnedLUT(int layer)
+{
+    return _SplatHasHU != 0 && _LearnedLUTCount >= 2 && layer == _LearnedLUTLayer;
+}
+
+float3 SampleLearnedLUT(float hu)
+{
+    if (_LearnedLUTCount < 2) return 0.0;
+    uint low = 0, high = _LearnedLUTCount - 1;
+    // Keep the original controls, including non-uniform spacing; no 8-bit LUT resampling.
+    [loop] for (uint step = 0; step < 10 && high - low > 1; ++step)
+    {
+        uint middle = (low + high) / 2;
+        if (_LearnedLUT.Load(int3(middle, 0, 0)).a <= hu) low = middle;
+        else high = middle;
+    }
+    float4 a = _LearnedLUT.Load(int3(low, 0, 0));
+    float4 b = _LearnedLUT.Load(int3(high, 0, 0));
+    return lerp(a.rgb, b.rgb, saturate((hu - a.a) / (b.a - a.a)));
+}
+
+float3 LearnedLinearToDisplay(float3 linearRGB)
+{
+    // The existing splat RT/compositor expects display-encoded colors.
+    // Interpolate in linear RGB FIRST, then encode exactly once at this boundary.
+    linearRGB = saturate(linearRGB);
+    return float3(
+        linearRGB.r <= 0.0031308 ? 12.92 * linearRGB.r : 1.055 * pow(max(linearRGB.r, 0.0), 1.0 / 2.4) - 0.055,
+        linearRGB.g <= 0.0031308 ? 12.92 * linearRGB.g : 1.055 * pow(max(linearRGB.g, 0.0), 1.0 / 2.4) - 0.055,
+        linearRGB.b <= 0.0031308 ? 12.92 * linearRGB.b : 1.055 * pow(max(linearRGB.b, 0.0), 1.0 / 2.4) - 0.055);
+}
 // x: global HU minimum, y: global HU maximum,
 // z: mapping strength, w: preserve current SH/layer luminance
 float4 _HUParams;
@@ -383,6 +419,11 @@ float4 ApplyLayerAppearance(
         opacity = max(appearance.parameters.z, 0.0);
     }
 
+    // Imported appearance replaces RGB completely, without old SH, brightness,
+    // manual HU mixing or macro/detail modulation. Opacity settings stay intact.
+    if (HasLearnedLUT(layer))
+        return float4(LearnedLinearToDisplay(SampleLearnedLUT(hu)), opacity);
+
     // The mix is exclusively between the anatomical layer base color and the
     // layer-specific HU lookup color. Teacher-image/SH chroma is never used.
     float layerHUMix = 0.0;
@@ -436,6 +477,7 @@ float3 ApplySurfaceHighlight(
     float3 viewDirectionWorld,
     float3x3 normalToWorld)
 {
+    if (HasLearnedLUT(splat.layer)) return color;
     float strength = splat.layer == 4 ? _SurfaceHighlightParams.x :
         (splat.layer == 5 ? _SurfaceHighlightParams.y : 0.0);
     if (strength <= 0.0)

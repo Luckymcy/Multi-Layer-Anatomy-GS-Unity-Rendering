@@ -412,6 +412,13 @@ namespace GaussianSplatting.Runtime
         [SerializeField] public float m_HULUTMin = -100.0f;
         [SerializeField] public float m_HULUTMax = 600.0f;
         [SerializeField] public List<HUTransferSettings> m_HUTransferSettings = new();
+        [SerializeField, HideInInspector] List<LearnedLUTVersion> m_LearnedLUTVersions = new();
+        [SerializeField, HideInInspector] int m_ActiveLearnedLUT = -1;
+        Texture2D m_GpuLearnedLUT;
+        public IReadOnlyList<LearnedLUTVersion> LearnedLUTVersions => m_LearnedLUTVersions;
+        public int ActiveLearnedLUTIndex => m_ActiveLearnedLUT;
+        public LearnedLUTVersion ActiveLearnedLUT => m_ActiveLearnedLUT >= 0 &&
+            m_ActiveLearnedLUT < m_LearnedLUTVersions.Count ? m_LearnedLUTVersions[m_ActiveLearnedLUT] : null;
         [Tooltip("Use CT-derived broad HU and band-pass HU detail when the asset contains them.")]
         [SerializeField] public bool m_EnableMultiscaleHU = true;
         [Tooltip("0 uses raw HU for color mapping; 1 uses the 5 mm broad-scale HU.")]
@@ -476,6 +483,9 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatHasHU = Shader.PropertyToID("_SplatHasHU");
             public static readonly int SplatHasHUFeatures = Shader.PropertyToID("_SplatHasHUFeatures");
             public static readonly int HULayerLUT = Shader.PropertyToID("_HULayerLUT");
+            public static readonly int LearnedLUT = Shader.PropertyToID("_LearnedLUT");
+            public static readonly int LearnedLUTLayer = Shader.PropertyToID("_LearnedLUTLayer");
+            public static readonly int LearnedLUTCount = Shader.PropertyToID("_LearnedLUTCount");
             public static readonly int HULayerLUTHeight = Shader.PropertyToID("_HULayerLUTHeight");
             public static readonly int HUParams = Shader.PropertyToID("_HUParams");
             public static readonly int HUTissueParams = Shader.PropertyToID("_HUTissueParams");
@@ -907,8 +917,58 @@ namespace GaussianSplatting.Runtime
             UploadHULUT();
         }
 
+        // Parse and validate completely before changing the current display.
+        public int ImportLearnedLUT(string json, string versionName, int layer = 7)
+        {
+            if (asset == null || !asset.hasHU || !asset.layerInfo.ContainsKey(layer))
+                throw new ArgumentException($"The selected asset must contain raw HU and layer {layer}.");
+            var version = LearnedLUTVersion.Parse(json, versionName, layer);
+            m_LearnedLUTVersions.Add(version);
+            SelectLearnedLUT(m_LearnedLUTVersions.Count - 1);
+            return m_ActiveLearnedLUT;
+        }
+
+        // -1 restores the existing manual appearance, without changing its settings.
+        public void SelectLearnedLUT(int index)
+        {
+            if (index < -1 || index >= m_LearnedLUTVersions.Count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+            if (index >= 0 && (asset == null || !asset.hasHU ||
+                !asset.layerInfo.ContainsKey(m_LearnedLUTVersions[index].layer)))
+                throw new ArgumentException("The selected asset does not contain the LUT's layer and raw HU.");
+            m_ActiveLearnedLUT = index;
+            UploadLearnedLUT();
+        }
+
+        void UploadLearnedLUT()
+        {
+            var version = ActiveLearnedLUT;
+            if (version == null)
+            {
+                DestroyImmediate(m_GpuLearnedLUT);
+                m_GpuLearnedLUT = null;
+                return;
+            }
+            if (m_GpuLearnedLUT == null || m_GpuLearnedLUT.width != version.hu.Length)
+            {
+                DestroyImmediate(m_GpuLearnedLUT);
+                m_GpuLearnedLUT = new Texture2D(version.hu.Length, 1, TextureFormat.RGBAFloat, false, true)
+                { name = "LearnedLinearRGBLUT", filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp, hideFlags = HideFlags.HideAndDontSave };
+            }
+            var controls = new Color[version.hu.Length];
+            for (int i = 0; i < controls.Length; ++i)
+            {
+                controls[i] = version.linearRGB[i];
+                controls[i].a = version.hu[i]; // HU position, never opacity.
+            }
+            m_GpuLearnedLUT.SetPixels(controls);
+            m_GpuLearnedLUT.Apply(false, false);
+        }
+
         public void UploadHULUT()
         {
+            UploadLearnedLUT();
             int layerCount = 1;
             if (asset != null && asset.LayerData.Count > 0)
                 layerCount = asset.LayerData.Max(l => (int)l.layer) + 1;
@@ -1003,6 +1063,9 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHU, m_GpuHUData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHUFeatures, m_GpuHUFeatureData);
             cmb.SetComputeTextureParam(cs, kernelIndex, Props.HULayerLUT, m_GpuHULUT);
+            cmb.SetComputeTextureParam(cs, kernelIndex, Props.LearnedLUT, m_GpuLearnedLUT != null ? m_GpuLearnedLUT : Texture2D.blackTexture);
+            cmb.SetComputeIntParam(cs, Props.LearnedLUTLayer, ActiveLearnedLUT?.layer ?? -1);
+            cmb.SetComputeIntParam(cs, Props.LearnedLUTCount, m_GpuLearnedLUT?.width ?? 0);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.LayerAppearance, m_GpuLayerAppearance);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatChunks, m_GpuChunks);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatOther, m_GpuOtherData);
@@ -1045,6 +1108,9 @@ namespace GaussianSplatting.Runtime
             mat.SetBuffer(Props.SplatHU, m_GpuHUData);
             mat.SetBuffer(Props.SplatHUFeatures, m_GpuHUFeatureData);
             mat.SetTexture(Props.HULayerLUT, m_GpuHULUT);
+            mat.SetTexture(Props.LearnedLUT, m_GpuLearnedLUT != null ? m_GpuLearnedLUT : Texture2D.blackTexture);
+            mat.SetInteger(Props.LearnedLUTLayer, ActiveLearnedLUT?.layer ?? -1);
+            mat.SetInteger(Props.LearnedLUTCount, m_GpuLearnedLUT?.width ?? 0);
             mat.SetBuffer(Props.LayerAppearance, m_GpuLayerAppearance);
             mat.SetBuffer(Props.SplatOther, m_GpuOtherData);
             mat.SetBuffer(Props.SplatSH, m_GpuSHData);
@@ -1081,6 +1147,8 @@ namespace GaussianSplatting.Runtime
 
         void DisposeResourcesForAsset()
         {
+            DestroyImmediate(m_GpuLearnedLUT);
+            m_GpuLearnedLUT = null;
             DestroyImmediate(m_GpuColorData);
             DestroyImmediate(m_GpuHULUT);
             m_GpuHULUT = null;

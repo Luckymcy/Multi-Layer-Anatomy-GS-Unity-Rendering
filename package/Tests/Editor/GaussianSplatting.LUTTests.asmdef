@@ -1,0 +1,6 @@
+{
+    "name": "GaussianSplatting.LUTTests",
+    "references": ["GaussianSplatting"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"]
+}
