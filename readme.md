@@ -16,18 +16,13 @@ that contain only `hu`. It preserves the values through layer splitting and
 Morton reordering, stores them in per-layer binary assets, and uploads them to
 the GPU.
 
-When the selected Gaussian asset contains HU, expand **HU Mapping** on the
-`GaussianSplatRenderer` component. Unity automatically builds a 256-by-layer
-lookup texture from the Low/Center/High HU and color controls. **Layer / HU Mix**
-blends the layer base color with the mapped HU color. Teacher-image RGB chroma
-is discarded; **Preserve SH Lighting** optionally retains only its learned
-view-dependent luminance. HU mapping changes RGB only and does not alter
-Gaussian opacity.
+Choose one **Display mode** on GaussianSplatRenderer:
 
-When multiscale HU is available, **Macro HU Blend** selects raw versus broadly
-smoothed HU for the color lookup. **Detail Strength** uses the patient-specific
-band-pass HU residual for subtle local luminance texture; it is applied only to
-L4.
+- **Original Gaussian** uses the stored Gaussian color / SH, bypassing manual coloring.
+- **Manual** uses layer base colors; optional HU mapping, luminance and other fine controls are collapsed under **Advanced manual settings**.
+- **Trained** uses imported LUT JSON on its selected layer and original Gaussian colors on other layers. Without a valid LUT it falls back to original Gaussian colors. Independent Gaussian RGB import is not yet connected.
+
+L4/L5 special brightness, synthetic surface highlights and multiscale HU display modulation have been removed from both compute backends. HU feature data remains import-compatible but no longer modulates the display. Geometry, layer visibility and opacity controls are shared by all modes. The runtime comparison panel exposes the same three mutually exclusive modes.
 
 <br>
 

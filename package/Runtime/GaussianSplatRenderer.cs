@@ -394,21 +394,21 @@ namespace GaussianSplatting.Runtime
         // layer stuff
         [SerializeField] public List<int2> m_LayerActivationState;
         [SerializeField] public List<LayerAppearance> m_LayerAppearances = new();
+        public enum AppearanceMode { OriginalGaussian = 0, Manual = 1, Trained = 2 }
+        [SerializeField, HideInInspector] AppearanceMode m_AppearanceMode = AppearanceMode.Manual;
+        [SerializeField, HideInInspector] bool m_AppearanceModeInitialized;
+        public AppearanceMode CurrentAppearanceMode => m_AppearanceMode;
+        public void SetAppearanceMode(AppearanceMode mode)
+        {
+            if (!Enum.IsDefined(typeof(AppearanceMode), mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+            m_AppearanceMode = mode;
+            m_AppearanceModeInitialized = true;
+        }
         [SerializeField] public bool m_EnableHUMapping = true;
         [Tooltip("Color mix: 0 uses the layer base color, 1 uses the per-layer HU lookup color.")]
         [SerializeField, Range(0.0f, 1.0f)] public float m_HUColorStrength = 0.5f;
         [Tooltip("Use only the grayscale luminance learned by SH; teacher-image hue is always discarded.")]
         [SerializeField] public bool m_HUPreserveLighting = true;
-        [Tooltip("How strongly teacher-image grayscale brightness affects L4/L5. 0 keeps the selected color brightness; 1 uses the full learned brightness.")]
-        [SerializeField, Range(0.0f, 1.0f)] public float m_SHLightingInfluence = 0.45f;
-        [Tooltip("Wet surface highlight intensity for the myocardium (L4). Set to 0 to disable.")]
-        [SerializeField, Range(0.0f, 1.0f)] public float m_L4HighlightStrength = 0.16f;
-        [Tooltip("Wet surface highlight intensity for the great vessels (L5). Set to 0 to disable.")]
-        [SerializeField, Range(0.0f, 1.0f)] public float m_L5HighlightStrength = 0.22f;
-        [Tooltip("Higher values make the highlights smaller and sharper.")]
-        [SerializeField, Range(4.0f, 128.0f)] public float m_HighlightSharpness = 32.0f;
-        [Tooltip("Highlight light direction relative to the camera: X right, Y up, Z toward the camera.")]
-        [SerializeField] public Vector3 m_HighlightLightDirection = new(-0.35f, 0.55f, 1.0f);
         [SerializeField] public float m_HULUTMin = -100.0f;
         [SerializeField] public float m_HULUTMax = 600.0f;
         [SerializeField] public List<HUTransferSettings> m_HUTransferSettings = new();
@@ -419,15 +419,6 @@ namespace GaussianSplatting.Runtime
         public int ActiveLearnedLUTIndex => m_ActiveLearnedLUT;
         public LearnedLUTVersion ActiveLearnedLUT => m_ActiveLearnedLUT >= 0 &&
             m_ActiveLearnedLUT < m_LearnedLUTVersions.Count ? m_LearnedLUTVersions[m_ActiveLearnedLUT] : null;
-        [Tooltip("Use CT-derived broad HU and band-pass HU detail when the asset contains them.")]
-        [SerializeField] public bool m_EnableMultiscaleHU = true;
-        [Tooltip("0 uses raw HU for color mapping; 1 uses the 5 mm broad-scale HU.")]
-        [SerializeField, Range(0.0f, 1.0f)] public float m_HUMacroBlend = 0.75f;
-        [Tooltip("Brightness modulation produced by band-pass HU detail.")]
-        [SerializeField, Range(0.0f, 0.2f)] public float m_HUDetailStrength = 0.07f;
-        [Tooltip("Absolute HU detail that reaches full modulation strength.")]
-        [SerializeField, Min(1.0f)] public float m_HUDetailRange = 80.0f;
-
         int m_SplatCount; // initially same as asset splat count, but editing can change this
         GraphicsBuffer m_GpuSortDistances;
         internal GraphicsBuffer m_GpuSortKeys;
@@ -483,15 +474,12 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatHasHU = Shader.PropertyToID("_SplatHasHU");
             public static readonly int SplatHasHUFeatures = Shader.PropertyToID("_SplatHasHUFeatures");
             public static readonly int HULayerLUT = Shader.PropertyToID("_HULayerLUT");
+            public static readonly int AppearanceMode = Shader.PropertyToID("_AppearanceMode");
             public static readonly int LearnedLUT = Shader.PropertyToID("_LearnedLUT");
             public static readonly int LearnedLUTLayer = Shader.PropertyToID("_LearnedLUTLayer");
             public static readonly int LearnedLUTCount = Shader.PropertyToID("_LearnedLUTCount");
             public static readonly int HULayerLUTHeight = Shader.PropertyToID("_HULayerLUTHeight");
             public static readonly int HUParams = Shader.PropertyToID("_HUParams");
-            public static readonly int HUTissueParams = Shader.PropertyToID("_HUTissueParams");
-            public static readonly int SHLightingInfluence = Shader.PropertyToID("_SHLightingInfluence");
-            public static readonly int SurfaceHighlightParams = Shader.PropertyToID("_SurfaceHighlightParams");
-            public static readonly int SurfaceHighlightLightDirection = Shader.PropertyToID("_SurfaceHighlightLightDirection");
             public static readonly int LayerAppearance = Shader.PropertyToID("_LayerAppearance");
             public static readonly int LayerAppearanceCount = Shader.PropertyToID("_LayerAppearanceCount");
             public static readonly int SplatOther = Shader.PropertyToID("_SplatOther");
@@ -937,6 +925,7 @@ namespace GaussianSplatting.Runtime
                 !asset.layerInfo.ContainsKey(m_LearnedLUTVersions[index].layer)))
                 throw new ArgumentException("The selected asset does not contain the LUT's layer and raw HU.");
             m_ActiveLearnedLUT = index;
+            SetAppearanceMode(index >= 0 ? AppearanceMode.Trained : AppearanceMode.Manual);
             UploadLearnedLUT();
         }
 
@@ -1021,6 +1010,9 @@ namespace GaussianSplatting.Runtime
 
         public void OnEnable()
         {
+            // Migrate existing scenes once, preserving their previously selected LUT/manual display.
+            if (!m_AppearanceModeInitialized)
+                SetAppearanceMode(ActiveLearnedLUT != null ? AppearanceMode.Trained : AppearanceMode.Manual);
             Initialize();
         }
         
@@ -1062,6 +1054,7 @@ namespace GaussianSplatting.Runtime
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatLayer, m_GpuLayerData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHU, m_GpuHUData);
             cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatHUFeatures, m_GpuHUFeatureData);
+            cmb.SetComputeIntParam(cs, Props.AppearanceMode, (int)m_AppearanceMode);
             cmb.SetComputeTextureParam(cs, kernelIndex, Props.HULayerLUT, m_GpuHULUT);
             cmb.SetComputeTextureParam(cs, kernelIndex, Props.LearnedLUT, m_GpuLearnedLUT != null ? m_GpuLearnedLUT : Texture2D.blackTexture);
             cmb.SetComputeIntParam(cs, Props.LearnedLUTLayer, ActiveLearnedLUT?.layer ?? -1);
@@ -1089,11 +1082,6 @@ namespace GaussianSplatting.Runtime
                 math.max(m_HULUTMax, m_HULUTMin + 1.0f),
                 m_EnableHUMapping ? math.saturate(m_HUColorStrength) : 0.0f,
                 m_HUPreserveLighting ? 1.0f : 0.0f));
-            cmb.SetComputeVectorParam(cs, Props.HUTissueParams, new Vector4(
-                m_EnableMultiscaleHU ? 1.0f : 0.0f,
-                math.saturate(m_HUMacroBlend),
-                math.max(m_HUDetailStrength, 0.0f),
-                math.max(m_HUDetailRange, 1.0f)));
             cmb.SetComputeIntParam(cs, Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
 
             UpdateCutoutsBuffer();
@@ -1107,6 +1095,7 @@ namespace GaussianSplatting.Runtime
             mat.SetBuffer(Props.SplatLayer, m_GpuLayerData);
             mat.SetBuffer(Props.SplatHU, m_GpuHUData);
             mat.SetBuffer(Props.SplatHUFeatures, m_GpuHUFeatureData);
+            mat.SetInteger(Props.AppearanceMode, (int)m_AppearanceMode);
             mat.SetTexture(Props.HULayerLUT, m_GpuHULUT);
             mat.SetTexture(Props.LearnedLUT, m_GpuLearnedLUT != null ? m_GpuLearnedLUT : Texture2D.blackTexture);
             mat.SetInteger(Props.LearnedLUTLayer, ActiveLearnedLUT?.layer ?? -1);
@@ -1130,11 +1119,6 @@ namespace GaussianSplatting.Runtime
                 math.max(m_HULUTMax, m_HULUTMin + 1.0f),
                 m_EnableHUMapping ? math.saturate(m_HUColorStrength) : 0.0f,
                 m_HUPreserveLighting ? 1.0f : 0.0f));
-            mat.SetVector(Props.HUTissueParams, new Vector4(
-                m_EnableMultiscaleHU ? 1.0f : 0.0f,
-                math.saturate(m_HUMacroBlend),
-                math.max(m_HUDetailStrength, 0.0f),
-                math.max(m_HUDetailRange, 1.0f)));
             mat.SetInteger(Props.LayerAppearanceCount, m_GpuLayerAppearance?.count ?? 0);
             mat.SetInteger(Props.OptimizeForQuest, m_OptimizeForQuest ? 1 : 0);
         }
@@ -1233,19 +1217,6 @@ namespace GaussianSplatting.Runtime
 
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.VecScreenParams, screenPar);
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.VecWorldSpaceCameraPos, camPos);
-            cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SHLightingInfluence,
-                m_HUPreserveLighting ? math.saturate(m_SHLightingInfluence) : 0.0f);
-            cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.SurfaceHighlightParams, new Vector4(
-                math.saturate(m_L4HighlightStrength),
-                math.saturate(m_L5HighlightStrength),
-                math.max(m_HighlightSharpness, 1.0f),
-                0.0f));
-            Vector3 lightDirection = m_HighlightLightDirection.sqrMagnitude > 0.0001f
-                ? m_HighlightLightDirection.normalized
-                : Vector3.forward;
-            lightDirection = cam.transform.TransformDirection(lightDirection);
-            cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.SurfaceHighlightLightDirection,
-                new Vector4(lightDirection.x, lightDirection.y, lightDirection.z, 0.0f));
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatScale, m_SplatScale);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatOpacityScale, m_OpacityScale);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOrder, m_SHOrder);

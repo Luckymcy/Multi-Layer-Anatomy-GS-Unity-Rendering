@@ -324,6 +324,7 @@ uint _SplatHasHU;
 uint _SplatHasHUFeatures;
 Texture2D<float4> _HULayerLUT;
 uint _HULayerLUTHeight;
+int _AppearanceMode; // 0 original Gaussian SH, 1 manual, 2 trained appearance
 // Exact imported control points: RGB is linear light, A is raw HU position.
 Texture2D<float4> _LearnedLUT;
 int _LearnedLUTLayer;
@@ -331,7 +332,7 @@ uint _LearnedLUTCount;
 
 bool HasLearnedLUT(int layer)
 {
-    return _SplatHasHU != 0 && _LearnedLUTCount >= 2 && layer == _LearnedLUTLayer;
+    return _AppearanceMode == 2 && _SplatHasHU != 0 && _LearnedLUTCount >= 2 && layer == _LearnedLUTLayer;
 }
 
 float3 SampleLearnedLUT(float hu)
@@ -363,14 +364,6 @@ float3 LearnedLinearToDisplay(float3 linearRGB)
 // x: global HU minimum, y: global HU maximum,
 // z: mapping strength, w: preserve current SH/layer luminance
 float4 _HUParams;
-// x: enable multiscale HU, y: raw-to-macro HU blend,
-// z: detail brightness strength, w: HU detail normalization range
-float4 _HUTissueParams;
-float _SHLightingInfluence;
-// x: L4 highlight strength, y: L5 highlight strength, z: sharpness.
-float4 _SurfaceHighlightParams;
-float4 _SurfaceHighlightLightDirection;
-
 struct LayerAppearanceData
 {
     float4 color;
@@ -419,41 +412,29 @@ float4 ApplyLayerAppearance(
         opacity = max(appearance.parameters.z, 0.0);
     }
 
-    // Imported appearance replaces RGB completely, without old SH, brightness,
-    // manual HU mixing or macro/detail modulation. Opacity settings stay intact.
-    if (HasLearnedLUT(layer))
-        return float4(LearnedLinearToDisplay(SampleLearnedLUT(hu)), opacity);
+    if (_AppearanceMode == 0)
+        return float4(learnedColor, opacity);
+    if (_AppearanceMode == 2)
+    {
+        if (HasLearnedLUT(layer))
+            return float4(LearnedLinearToDisplay(SampleLearnedLUT(hu)), opacity);
+        return float4(learnedColor, opacity); // Unselected layers retain original Gaussian color.
+    }
 
     // The mix is exclusively between the anatomical layer base color and the
     // layer-specific HU lookup color. Teacher-image/SH chroma is never used.
     float layerHUMix = 0.0;
     float3 huColor = layerColor;
     float huCenterLuminance = max(dot(layerColor, kLuma), 1e-4);
-    bool useMultiscaleHU =
-        layer == 4 &&
-        _SplatHasHUFeatures != 0 &&
-        _HUTissueParams.x > 0.5;
-    float mappingHU = useMultiscaleHU
-        ? lerp(hu, huMacro, saturate(_HUTissueParams.y))
-        : hu;
     if (_SplatHasHU != 0 && _HULayerLUTHeight != 0)
     {
-        float4 huMapping = SampleHULayerLUT(mappingHU, layer);
+        float4 huMapping = SampleHULayerLUT(hu, layer);
         huColor = huMapping.rgb;
         huCenterLuminance = max(huMapping.a, 1e-4);
         layerHUMix = saturate(_HUParams.z);
     }
 
     float3 anatomyColor = lerp(layerColor, huColor, layerHUMix);
-
-    // The band-pass CT residual contains local patient-specific density
-    // variation. Keep it subtle: it modulates luminance, not anatomical hue.
-    if (useMultiscaleHU)
-    {
-        float detailRange = max(_HUTissueParams.w, 1.0);
-        float detail = clamp(huDetail / detailRange, -1.0, 1.0);
-        anatomyColor *= max(0.0, 1.0 + detail * max(_HUTissueParams.z, 0.0));
-    }
 
     // Preserve only the grayscale luminance learned from teacher images. This
     // keeps view-dependent SH lighting while discarding their configured hue.
@@ -463,60 +444,10 @@ float4 ApplyLayerAppearance(
         float layerCenterLuminance = max(dot(layerColor, kLuma), 1e-4);
         float neutralLuminance = lerp(layerCenterLuminance, huCenterLuminance, layerHUMix);
         float learnedLighting = learnedLuminance / neutralLuminance;
-        float influence = (layer == 4 || layer == 5) ?
-            saturate(_SHLightingInfluence) : 1.0;
-        anatomyColor *= lerp(1.0, learnedLighting, influence);
+        anatomyColor *= learnedLighting;
     }
 
     return float4(anatomyColor * brightness, opacity);
-}
-
-float3 ApplySurfaceHighlight(
-    float3 color,
-    SplatData splat,
-    float3 viewDirectionWorld,
-    float3x3 normalToWorld)
-{
-    if (HasLearnedLUT(splat.layer)) return color;
-    float strength = splat.layer == 4 ? _SurfaceHighlightParams.x :
-        (splat.layer == 5 ? _SurfaceHighlightParams.y : 0.0);
-    if (strength <= 0.0)
-        return color;
-
-    // The shortest ellipsoid axis approximates a surface normal only for
-    // flattened Gaussians. Fade the effect for nearly spherical splats.
-    float3 scale = abs(splat.scale);
-    float3 normalAxis = float3(1.0, 0.0, 0.0);
-    float shortest = scale.x;
-    float secondShortest = min(scale.y, scale.z);
-    if (scale.y < shortest)
-    {
-        secondShortest = min(shortest, scale.z);
-        shortest = scale.y;
-        normalAxis = float3(0.0, 1.0, 0.0);
-    }
-    if (scale.z < shortest)
-    {
-        secondShortest = shortest;
-        shortest = scale.z;
-        normalAxis = float3(0.0, 0.0, 1.0);
-    }
-    float surfaceConfidence = saturate(
-        2.0 * (secondShortest - shortest) / max(secondShortest, 1e-5));
-    if (surfaceConfidence <= 0.0)
-        return color;
-
-    float3 normalWorld = normalize(mul(normalToWorld,
-        QuatRotateVector(normalAxis, splat.rot)));
-    normalWorld *= dot(normalWorld, viewDirectionWorld) < 0.0 ? -1.0 : 1.0;
-    float3 lightDirection = normalize(_SurfaceHighlightLightDirection.xyz);
-    float3 halfDirection = normalize(lightDirection + viewDirectionWorld +
-        1e-5 * viewDirectionWorld);
-    float highlight = pow(saturate(dot(normalWorld, halfDirection)),
-        max(_SurfaceHighlightParams.z, 1.0));
-    highlight *= saturate(dot(normalWorld, lightDirection));
-    highlight *= surfaceConfidence * strength;
-    return color + highlight * float3(1.0, 0.90, 0.84);
 }
 
 // Match GaussianSplatAsset.VectorFormat

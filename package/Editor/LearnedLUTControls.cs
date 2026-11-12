@@ -38,7 +38,7 @@ namespace GaussianSplatting.Editor
             }
             var versions = renderer.LearnedLUTVersions;
             var names = new string[versions.Count + 1];
-            names[0] = "Original / manual";
+            names[0] = "No trained LUT (original Gaussian fallback)";
             for (int i = 0; i < versions.Count; ++i) names[i + 1] = $"{i + 1}. {versions[i].name} (L{versions[i].layer})";
             int selection = EditorGUILayout.Popup("Displayed version", renderer.ActiveLearnedLUTIndex + 1, names) - 1;
             if (selection != renderer.ActiveLearnedLUTIndex)
@@ -47,6 +47,7 @@ namespace GaussianSplatting.Editor
                 {
                     Undo.RecordObject(renderer, "Switch Learned LUT");
                     renderer.SelectLearnedLUT(selection);
+                    if (selection < 0) renderer.SetAppearanceMode(GaussianSplatRenderer.AppearanceMode.Trained);
                     EditorUtility.SetDirty(renderer);
                     s_Status = null;
                 }
@@ -65,8 +66,8 @@ namespace GaussianSplatting.Editor
             }
             if (!string.IsNullOrEmpty(s_Status)) EditorGUILayout.HelpBox(s_Status, MessageType.Info);
             EditorGUILayout.HelpBox(
-                "Imported versions fully replace RGB on the selected layer using raw HU; old SH lighting and HU mix/detail are bypassed. " +
-                "Opacity and other layers are preserved. Choose Original / manual to restore the existing settings. Save the scene to retain imported versions.", MessageType.Info);
+                "Imported versions fully replace RGB on the selected layer using raw HU. Other layers use original Gaussian colors. " +
+                "Use Display mode to switch to manual or original appearance. Save the scene to retain imported versions.", MessageType.Info);
         }
     }
 }

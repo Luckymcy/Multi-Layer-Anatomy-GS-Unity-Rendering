@@ -67,6 +67,10 @@ namespace GaussianSplatting.Runtime
                 GUI.DragWindow(new Rect(0, 0, 10000, 20));
                 return;
             }
+            int mode = GUILayout.SelectionGrid((int)rendererTarget.CurrentAppearanceMode,
+                new[] { "Original Gaussian", "Manual", "Trained" }, 3);
+            if (mode != (int)rendererTarget.CurrentAppearanceMode)
+                rendererTarget.SetAppearanceMode((GaussianSplatRenderer.AppearanceMode)mode);
             GUILayout.BeginHorizontal();
             GUILayout.Label("Target layer", GUILayout.Width(100));
             m_LayerText = GUILayout.TextField(m_LayerText, GUILayout.Width(65));
@@ -77,8 +81,9 @@ namespace GaussianSplatting.Runtime
             if (GUILayout.Button("Import JSON...")) { m_ShowBrowser = true; RefreshDirectory(); }
             GUI.enabled = true;
             var active = rendererTarget.ActiveLearnedLUT;
-            GUILayout.Label(active == null ? "Current: Original / manual" : $"Current: {active.name} (L{active.layer}, {active.hu.Length} controls)");
-            DrawSelectionButton(-1, "Original / manual");
+            GUILayout.Label(rendererTarget.CurrentAppearanceMode != GaussianSplatRenderer.AppearanceMode.Trained
+                ? "Current: " + rendererTarget.CurrentAppearanceMode
+                : active == null ? "No trained LUT: using original Gaussian colors" : $"Current: {active.name} (L{active.layer}, {active.hu.Length} controls)");
             m_VersionScroll = GUILayout.BeginScrollView(m_VersionScroll, GUILayout.Height(135));
             for (int i = 0; i < rendererTarget.LearnedLUTVersions.Count; ++i)
             {
@@ -93,7 +98,7 @@ namespace GaussianSplatting.Runtime
 
         void DrawSelectionButton(int index, string label)
         {
-            if (GUILayout.Button((rendererTarget.ActiveLearnedLUTIndex == index ? "[Active] " : "") + label))
+            if (GUILayout.Button((rendererTarget.CurrentAppearanceMode == GaussianSplatRenderer.AppearanceMode.Trained && rendererTarget.ActiveLearnedLUTIndex == index ? "[Active] " : "") + label))
             {
                 try { rendererTarget.SelectLearnedLUT(index); m_Status = "Switched to " + label; }
                 catch (Exception error) { m_Status = error.Message; }

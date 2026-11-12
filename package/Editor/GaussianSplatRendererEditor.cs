@@ -41,9 +41,8 @@ namespace GaussianSplatting.Editor
         SerializedProperty m_PropOptimizeForQuest;
 
         bool m_ResourcesExpanded = false;
-        bool m_LayerAppearanceExpanded = true;
-        bool m_LightingExpanded = true;
-        bool m_HUAppearanceExpanded = true;
+        bool m_AdvancedRenderExpanded;
+        bool m_DebugExpanded;
         int m_CameraIndex = 0;
 
         bool m_ExportBakeTransform;
@@ -126,8 +125,12 @@ namespace GaussianSplatting.Editor
             GUILayout.Label("Render Options", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(m_PropSplatScale);
             EditorGUILayout.PropertyField(m_PropOpacityScale);
-            EditorGUILayout.PropertyField(m_PropSHOrder);
-            EditorGUILayout.PropertyField(m_PropSHOnly);
+            m_AdvancedRenderExpanded = EditorGUILayout.Foldout(m_AdvancedRenderExpanded, "Advanced render settings", true);
+            if (m_AdvancedRenderExpanded)
+            {
+                EditorGUILayout.PropertyField(m_PropSHOrder);
+                EditorGUILayout.PropertyField(m_PropSHOnly);
+            }
             EditorGUILayout.PropertyField(m_gpuSortType);
             if (gs.m_gpuSortType != GpuSorting.SortType.None)
             {
@@ -159,200 +162,18 @@ namespace GaussianSplatting.Editor
                     }
                 }
 
-                int appearanceCount = gs.asset.LayerData.Count > 0
-                    ? gs.asset.LayerData.Max(l => (int)l.layer) + 1
-                    : 1;
-                gs.EnsureLayerAppearanceCount(appearanceCount);
-
-                m_LayerAppearanceExpanded = EditorGUILayout.Foldout(
-                    m_LayerAppearanceExpanded,
-                    "Layer Base Appearance",
-                    true,
-                    EditorStyles.foldoutHeader);
-                if (m_LayerAppearanceExpanded)
-                {
-                    foreach (int layerId in gs.asset.layerInfo.Keys.OrderBy(id => id))
-                    {
-                        var appearance = gs.m_LayerAppearances[layerId];
-                        EditorGUILayout.LabelField($"Layer {layerId}", EditorStyles.boldLabel);
-                        EditorGUI.indentLevel++;
-                        EditorGUI.BeginChangeCheck();
-                        appearance.color = EditorGUILayout.ColorField("Base Color", appearance.color);
-                        appearance.brightness = EditorGUILayout.Slider("Brightness", appearance.brightness, 0.0f, 3.0f);
-                        appearance.opacity = EditorGUILayout.Slider("Layer Opacity", appearance.opacity, 0.0f, 2.0f);
-                        if (EditorGUI.EndChangeCheck())
-                        {
-                            Undo.RecordObject(gs, $"Change Layer {layerId} Appearance");
-                            gs.m_LayerAppearances[layerId] = appearance;
-                            gs.UploadLayerAppearanceData();
-                            EditorUtility.SetDirty(gs);
-                        }
-                        EditorGUI.indentLevel--;
-                    }
-                }
-
-                m_LightingExpanded = EditorGUILayout.Foldout(
-                    m_LightingExpanded,
-                    "Lighting & Surface Highlights",
-                    true,
-                    EditorStyles.foldoutHeader);
-                if (m_LightingExpanded)
-                {
-                    EditorGUI.BeginChangeCheck();
-                    bool preserveLighting = EditorGUILayout.Toggle(
-                        new GUIContent("Preserve SH Lighting", "Use the teacher's learned grayscale shading without its hue."),
-                        gs.m_HUPreserveLighting);
-                    float lightingInfluence = gs.m_SHLightingInfluence;
-                    using (new EditorGUI.DisabledScope(!preserveLighting))
-                    {
-                        lightingInfluence = EditorGUILayout.Slider(
-                            new GUIContent("L4/L5 Learned Brightness", "0 keeps the selected layer/HU brightness; 1 uses the full learned teacher brightness for L4 and L5."),
-                            lightingInfluence, 0.0f, 1.0f);
-                    }
-                    float l4Highlight = EditorGUILayout.Slider(
-                        "L4 Highlight Strength", gs.m_L4HighlightStrength, 0.0f, 1.0f);
-                    float l5Highlight = EditorGUILayout.Slider(
-                        "L5 Highlight Strength", gs.m_L5HighlightStrength, 0.0f, 1.0f);
-                    float highlightSharpness = EditorGUILayout.Slider(
-                        "Highlight Sharpness", gs.m_HighlightSharpness, 4.0f, 128.0f);
-                    Vector3 highlightDirection = EditorGUILayout.Vector3Field(
-                        new GUIContent("Highlight Light Direction", "Camera-relative direction: X right, Y up, Z toward the viewer."),
-                        gs.m_HighlightLightDirection);
-                    if (EditorGUI.EndChangeCheck())
-                    {
-                        Undo.RecordObject(gs, "Change Splat Lighting");
-                        gs.m_HUPreserveLighting = preserveLighting;
-                        gs.m_SHLightingInfluence = lightingInfluence;
-                        gs.m_L4HighlightStrength = l4Highlight;
-                        gs.m_L5HighlightStrength = l5Highlight;
-                        gs.m_HighlightSharpness = highlightSharpness;
-                        gs.m_HighlightLightDirection = highlightDirection;
-                        EditorUtility.SetDirty(gs);
-                    }
-                    EditorGUILayout.HelpBox(
-                        "Highlights use the flattest Gaussian axis as an approximate surface normal. Set a layer's strength to 0 to compare without highlights.",
-                        MessageType.Info);
-                }
-
-                gs.EnsureHUTransferSettingsCount(appearanceCount);
-                m_HUAppearanceExpanded = EditorGUILayout.Foldout(
-                    m_HUAppearanceExpanded,
-                    "HU Mapping",
-                    true,
-                    EditorStyles.foldoutHeader);
-                if (m_HUAppearanceExpanded)
-                {
-                    if (!gs.asset.hasHU)
-                    {
-                        EditorGUILayout.HelpBox(
-                            "This asset has no per-splat HU data. Recreate it from a PLY containing the float 'hu' property.",
-                            MessageType.Warning);
-                    }
-                    else if (!gs.asset.hasHUFeatures)
-                    {
-                        EditorGUILayout.HelpBox(
-                            "This asset has raw HU only. Recreate it from a PLY containing " +
-                            "'hu_macro' and 'hu_detail' to enable CT-derived tissue texture.",
-                            MessageType.Info);
-                    }
-
-                    using (new EditorGUI.DisabledScope(!gs.asset.hasHU))
-                    {
-                        EditorGUI.BeginChangeCheck();
-                        bool enableHU = EditorGUILayout.Toggle("Enable HU Mapping", gs.m_EnableHUMapping);
-                        float huStrength = EditorGUILayout.Slider(
-                            new GUIContent("Layer / HU Mix", "0 uses Layer Base Color; 1 uses the HU lookup color."),
-                            gs.m_HUColorStrength,
-                            0.0f,
-                            1.0f);
-                        bool enableMultiscaleHU = EditorGUILayout.Toggle(
-                            "Enable Multiscale HU", gs.m_EnableMultiscaleHU);
-                        float macroBlend = gs.m_HUMacroBlend;
-                        float detailStrength = gs.m_HUDetailStrength;
-                        float detailRange = gs.m_HUDetailRange;
-                        using (new EditorGUI.DisabledScope(!gs.asset.hasHUFeatures || !enableMultiscaleHU))
-                        {
-                            macroBlend = EditorGUILayout.Slider(
-                                new GUIContent("Macro HU Blend", "0 uses raw HU; 1 uses broad 5 mm HU for the color lookup."),
-                                macroBlend,
-                                0.0f,
-                                1.0f);
-                            detailStrength = EditorGUILayout.Slider(
-                                new GUIContent("Detail Strength", "Maximum brightness modulation from local CT HU detail."),
-                                detailStrength,
-                                0.0f,
-                                0.2f);
-                            detailRange = EditorGUILayout.FloatField(
-                                new GUIContent("Detail HU Range", "Absolute band-pass HU value that reaches full detail strength."),
-                                detailRange);
-                        }
-                        float lutMin = EditorGUILayout.FloatField("LUT HU Min", gs.m_HULUTMin);
-                        float lutMax = EditorGUILayout.FloatField("LUT HU Max", gs.m_HULUTMax);
-                        if (EditorGUI.EndChangeCheck())
-                        {
-                            Undo.RecordObject(gs, "Change HU Mapping");
-                            gs.m_EnableHUMapping = enableHU;
-                            gs.m_HUColorStrength = huStrength;
-                            gs.m_EnableMultiscaleHU = enableMultiscaleHU;
-                            gs.m_HUMacroBlend = macroBlend;
-                            gs.m_HUDetailStrength = detailStrength;
-                            gs.m_HUDetailRange = Mathf.Max(1.0f, detailRange);
-                            gs.m_HULUTMin = lutMin;
-                            gs.m_HULUTMax = lutMax;
-                            gs.UploadHULUT();
-                            EditorUtility.SetDirty(gs);
-                        }
-
-                        if (gs.m_HULUTMax <= gs.m_HULUTMin)
-                            EditorGUILayout.HelpBox("LUT HU Max must be greater than LUT HU Min.", MessageType.Warning);
-
-                        EditorGUILayout.Space();
-                        foreach (int layerId in gs.asset.layerInfo.Keys.OrderBy(id => id))
-                        {
-                            var settings = gs.m_HUTransferSettings[layerId];
-                            EditorGUILayout.LabelField($"Layer {layerId}", EditorStyles.boldLabel);
-                            EditorGUI.indentLevel++;
-                            EditorGUI.BeginChangeCheck();
-                            settings.lowHU = EditorGUILayout.FloatField("Low HU", settings.lowHU);
-                            settings.centerHU = EditorGUILayout.FloatField("Center HU", settings.centerHU);
-                            settings.highHU = EditorGUILayout.FloatField("High HU", settings.highHU);
-                            settings.lowColor = EditorGUILayout.ColorField("Low Color", settings.lowColor);
-                            settings.centerColor = EditorGUILayout.ColorField("Center Color", settings.centerColor);
-                            settings.highColor = EditorGUILayout.ColorField("High Color", settings.highColor);
-                            if (EditorGUI.EndChangeCheck())
-                            {
-                                Undo.RecordObject(gs, $"Change Layer {layerId} HU Mapping");
-                                gs.m_HUTransferSettings[layerId] = settings;
-                                gs.UploadHULUT();
-                                EditorUtility.SetDirty(gs);
-                            }
-                            if (!(settings.lowHU < settings.centerHU && settings.centerHU < settings.highHU))
-                            {
-                                EditorGUILayout.HelpBox(
-                                    "Expected Low HU < Center HU < High HU.",
-                                    MessageType.Warning);
-                            }
-                            EditorGUI.indentLevel--;
-                        }
-
-                        if (GUILayout.Button("Reset HU Mapping Defaults"))
-                        {
-                            Undo.RecordObject(gs, "Reset HU Mapping Defaults");
-                            gs.ResetHUTransferSettings(appearanceCount);
-                            EditorUtility.SetDirty(gs);
-                        }
-                    }
-                }
             }
 
-            if (targets.Length == 1) LearnedLUTControls.Draw(gs);
-            else EditorGUILayout.HelpBox("Select a single renderer to import or compare learned LUT JSON versions.", MessageType.Info);
+            AppearanceControls.Draw(targets);
 
             EditorGUILayout.Space();
-            GUILayout.Label("Debugging Tweaks", EditorStyles.boldLabel);
-            EditorGUILayout.PropertyField(m_PropRenderMode);
-            if (m_PropRenderMode.intValue is (int)GaussianSplatRenderer.RenderMode.DebugPoints or (int)GaussianSplatRenderer.RenderMode.DebugPointIndices)
-                EditorGUILayout.PropertyField(m_PropPointDisplaySize);
+            m_DebugExpanded = EditorGUILayout.Foldout(m_DebugExpanded, "Debugging Tweaks", true);
+            if (m_DebugExpanded)
+            {
+                EditorGUILayout.PropertyField(m_PropRenderMode);
+                if (m_PropRenderMode.intValue is (int)GaussianSplatRenderer.RenderMode.DebugPoints or (int)GaussianSplatRenderer.RenderMode.DebugPointIndices)
+                    EditorGUILayout.PropertyField(m_PropPointDisplaySize);
+            }
 
             EditorGUILayout.Space();
             m_ResourcesExpanded = EditorGUILayout.Foldout(m_ResourcesExpanded, "Resources", true, EditorStyles.foldoutHeader);
